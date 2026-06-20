@@ -87,6 +87,10 @@ def init_state():
         "screening_id": None,
         "synth_text": "",
         "synth_data": None,
+        "themes": None,
+        "synth_chat": [],
+        "trends_data": None,
+        "trends_papers": [],
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -99,8 +103,11 @@ init_state()
 # ─────────────────────────────────────────────────────────────────
 
 def search_pubmed(query, date_from, date_to, max_results):
+    """PubMed search with pagination support — fetches up to max_results IDs,
+    then batches esummary/efetch calls in chunks of 200 to respect URL limits."""
     base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
     try:
+        # Step 1: get ALL matching PMIDs up to max_results
         s = requests.get(
             f"{base}/esearch.fcgi",
             params={
@@ -111,48 +118,63 @@ def search_pubmed(query, date_from, date_to, max_results):
                 "retmax": max_results,
                 "retmode": "json",
             },
-            timeout=15,
+            timeout=20,
         )
         s.raise_for_status()
         sd = s.json()
         ids = sd.get("esearchresult", {}).get("idlist", [])
+        total_available = int(sd.get("esearchresult", {}).get("count", 0))
         if not ids:
-            return [], 0
+            return [], total_available
 
-        # Get summaries (titles, authors, journal, year)
-        f = requests.get(
-            f"{base}/esummary.fcgi",
-            params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
-            timeout=15,
-        )
-        f.raise_for_status()
-        fd = f.json()
-
-        # Get abstracts via efetch (separate call - needed for accurate AI screening)
+        # Step 2: batch-fetch metadata in chunks of 200 (URL length safety)
+        BATCH = 200
+        summaries = {}
         abstracts = {}
-        try:
-            ab = requests.get(
-                f"{base}/efetch.fcgi",
-                params={"db": "pubmed", "id": ",".join(ids), "rettype": "abstract", "retmode": "xml"},
-                timeout=20,
-            )
-            ab.raise_for_status()
-            import re
-            xml = ab.text
-            # Simple regex parse — split by article and extract PMID + abstract
-            articles = re.split(r'<PubmedArticle>', xml)
-            for art in articles[1:]:
-                pmid_m = re.search(r'<PMID[^>]*>(\d+)</PMID>', art)
-                abs_m = re.findall(r'<AbstractText[^>]*>(.*?)</AbstractText>', art, re.DOTALL)
-                if pmid_m:
-                    abstracts[pmid_m.group(1)] = " ".join([re.sub(r'<[^>]+>', '', a).strip() for a in abs_m])[:2000]
-        except Exception:
-            pass  # Abstracts are nice-to-have, not critical
+        import re
+
+        for batch_start in range(0, len(ids), BATCH):
+            batch_ids = ids[batch_start : batch_start + BATCH]
+            id_str = ",".join(batch_ids)
+
+            # Summaries
+            try:
+                f = requests.post(
+                    f"{base}/esummary.fcgi",
+                    data={"db": "pubmed", "id": id_str, "retmode": "json"},
+                    timeout=25,
+                )
+                f.raise_for_status()
+                fd = f.json()
+                summaries.update(fd.get("result", {}))
+            except Exception as e:
+                st.warning(f"PubMed summary batch failed at offset {batch_start}: {e}")
+                continue
+
+            # Abstracts (best-effort)
+            try:
+                ab = requests.post(
+                    f"{base}/efetch.fcgi",
+                    data={"db": "pubmed", "id": id_str, "rettype": "abstract", "retmode": "xml"},
+                    timeout=30,
+                )
+                ab.raise_for_status()
+                xml = ab.text
+                articles = re.split(r"<PubmedArticle>", xml)
+                for art in articles[1:]:
+                    pmid_m = re.search(r"<PMID[^>]*>(\d+)</PMID>", art)
+                    abs_m = re.findall(r"<AbstractText[^>]*>(.*?)</AbstractText>", art, re.DOTALL)
+                    if pmid_m:
+                        abstracts[pmid_m.group(1)] = " ".join(
+                            [re.sub(r"<[^>]+>", "", a).strip() for a in abs_m]
+                        )[:2000]
+            except Exception:
+                pass  # Abstracts are nice-to-have
 
         items = []
         for pmid in ids:
-            d = fd.get("result", {}).get(pmid)
-            if not d:
+            d = summaries.get(pmid)
+            if not d or pmid == "uids":
                 continue
             title = (d.get("title") or "No title").replace("<", " ").replace(">", " ")
             authors = ", ".join([a.get("name", "") for a in d.get("authors", [])[:3]])
@@ -175,7 +197,7 @@ def search_pubmed(query, date_from, date_to, max_results):
                 "confidence": "",
                 "extraction": None,
             })
-        return items, int(sd.get("esearchresult", {}).get("count", len(items)))
+        return items, total_available
     except Exception as e:
         st.warning(f"PubMed error: {e}")
         return [], 0
@@ -352,7 +374,7 @@ Respond ONLY as valid JSON, no markdown:
 {{"country":"","setting":"","design":"","sample":"","aiTool":"","educationalOutcome":"","keyFinding":"one sentence","mainLimitation":"one sentence","relevance":"direct|partial|indirect","notes":""}}"""
 
 
-def build_synth_system_prompt():
+def build_synth_system_prompt(use_themes=False, themes=None):
     c = st.session_state.config
     style_section = ""
     if c.get("writing_style_sample", "").strip():
@@ -405,13 +427,38 @@ REQUIRED HEDGING (use these patterns instead):
 
 Even in the Conclusion, claims must be framed tentatively. Replace "To conclude, it is now clear that..." with "To conclude, the synthesis tentatively suggests that..." or "On balance, the corpus appears to support..."
 """
-    return f"""You are a PhD-level synthesis analyst writing in a specific author's voice for a scoping review on: {c['research_topic']}.
 
-Theoretical anchor: {c['theoretical_anchor']}
-{style_section}
-TASK
-You will receive (1) pre-computed statistical tables about a corpus, and (2) a list of included studies. Your job is to produce ONLY the NARRATIVE TEXT for each numbered section described below. Do NOT regenerate the tables — they are inserted programmatically. Do NOT add markdown headers (the section headings are inserted by the system).
+    # Choose organizing structure: emergent themes OR pre-defined tiers
+    if use_themes and themes:
+        theme_listing = "\n".join([
+            f"  • Theme {i+1}: {t.get('name','')} — {t.get('definition','')[:150]}"
+            for i, t in enumerate(themes)
+        ])
+        organizing_block = f"""
+ORGANIZING STRUCTURE — EMERGENT THEMES
+The corpus has been organized into the following data-driven themes (NOT pre-defined tiers):
 
+{theme_listing}
+
+When discussing tier-level patterns or distributions, instead refer to THEMES by name (or "Theme 1", "Theme 2", etc.). Theme-based synthesis replaces tier-based synthesis throughout.
+
+Produce narrative for NINE sections, separated by the literal marker `===SECTION===` on its own line.
+
+RESULTS SECTIONS (sections 1–5, factual interpretation, 100–180 words each)
+
+1. CORPUS OVERVIEW — Interpret what the corpus size, year range, database spread, and theme mix tentatively suggest about the maturity and shape of the evidence base.
+
+2. THEMATIC LANDSCAPE — Interpret which themes appear to carry the most weight (most supporting studies), which seem less developed, and what this may imply for the strength of the evidence. Refer to themes by name explicitly.
+
+3. OUTCOME EVIDENCE PROFILE — Discuss what kinds of outcomes the corpus appears to measure (attitudes, knowledge, skill, behaviour, results) and what this may mean for the strength of claims that can be defended.
+
+4. GEOGRAPHIC AND CONTEXTUAL VARIATION — Discuss how the spread (or absence) of geographic variation could affect generalisability and the application of the theoretical anchor.
+
+5. CROSS-THEME PATTERNS — Identify 2-3 patterns that appear across themes. Make explicit cross-references between theme names (e.g., "When Theme 1 is read in conjunction with Theme 3...") so the Discussion can build on them.
+"""
+    else:
+        organizing_block = """
+ORGANIZING STRUCTURE — TIERS
 Produce narrative for NINE sections, separated by the literal marker `===SECTION===` on its own line.
 
 RESULTS SECTIONS (sections 1–5, factual interpretation, 100–180 words each)
@@ -424,15 +471,24 @@ RESULTS SECTIONS (sections 1–5, factual interpretation, 100–180 words each)
 
 4. GEOGRAPHIC AND CONTEXTUAL VARIATION — Discuss how the spread (or absence) of geographic variation could affect generalisability and the application of the theoretical anchor.
 
-5. CROSS-TIER PATTERNS — Identify 2-3 patterns that appear across tiers (e.g., how Tier 3 readiness findings may relate to Tier 4 intervention outcomes, how Tier 1 frameworks may be reflected — or absent — in Tier 4 interventions). Make explicit cross-references between tier numbers so the Discussion can build on them.
+5. CROSS-TIER PATTERNS — Identify 2-3 patterns that appear across tiers. Make explicit cross-references between tier numbers so the Discussion can build on them.
+"""
+
+    return f"""You are a PhD-level synthesis analyst writing in a specific author's voice for a scoping review on: {c['research_topic']}.
+
+Theoretical anchor: {c['theoretical_anchor']}
+{style_section}
+TASK
+You will receive (1) pre-computed statistical tables about a corpus, and (2) a list of included studies. Your job is to produce ONLY the NARRATIVE TEXT for each numbered section described below. Do NOT regenerate the tables — they are inserted programmatically. Do NOT add markdown headers (the section headings are inserted by the system).
+{organizing_block}
 
 DISCUSSION SECTIONS (sections 6–8, building toward an argument, 200–300 words each)
 
 6. COMPARISON WITH AVAILABLE LITERATURE — Position the findings against what comparable scoping reviews, position papers, and frameworks in the wider field have reported. Note convergences and divergences. Where the corpus appears to extend or contradict prior reviews, say so tentatively. Reference the theoretical anchor explicitly. If specific comparator works are not visible in the corpus, frame the comparison at the level of general patterns reported elsewhere in the discipline.
 
-7. INTEGRATION ACROSS TIERS — Build a sustained argument that explicitly links the tier-level findings from the Results section. For example, frame Tier 3 (readiness) and Tier 4 (intervention) findings as complementary or contradictory in light of the Tier 1 (framework). Use phrases like "When read in conjunction with...", "Taken together, Tiers 2 and 3 appear to suggest...", "Such a pattern may be interpreted in light of the theoretical anchor...". This section must reference specific tier numbers and pull the threads together.
+7. INTEGRATION ACROSS {"THEMES" if use_themes and themes else "TIERS"} — Build a sustained argument that explicitly links the findings from the Results section. Use phrases like "When read in conjunction with...", "Taken together, {"Themes" if use_themes else "Tiers"} 2 and 3 appear to suggest...", "Such a pattern may be interpreted in light of the theoretical anchor...". This section must reference specific {"theme names" if use_themes and themes else "tier numbers"} and pull the threads together.
 
-8. ARGUMENT AND IMPLICATIONS — Develop the strongest defensible argument the corpus appears to support, while remaining hedged throughout. Distinguish what the corpus may tentatively support at the level of policy/accreditation standards from what it does not. Anticipate counter-positions and address them measuredly. Close this section with a clear (but hedged) claim about what the synthesis appears to contribute.
+8. ARGUMENT AND IMPLICATIONS — Develop the strongest defensible argument the corpus appears to support, while remaining hedged throughout. Distinguish what the corpus may tentatively support from what it does not. Anticipate counter-positions and address them measuredly. Close this section with a clear (but hedged) claim about what the synthesis appears to contribute.
 
 CONCLUSION (section 9, 120–180 words)
 
@@ -442,7 +498,7 @@ CRITICAL RULES
 - Output narrative ONLY. No markdown headers, no tables, no bullet lists.
 - Use the literal marker `===SECTION===` between sections — exactly nine sections.
 - Mimic the writing style sample precisely.
-- Reference specific tier names and Kirkpatrick levels explicitly in Sections 5, 7, and 8.
+- Reference specific {"theme names" if use_themes and themes else "tier names and Kirkpatrick levels"} explicitly in Sections 5, 7, and 8.
 - Avoid every form of assertive phrasing listed above. Hedge throughout.
 - Do not invent studies or findings beyond what is in the corpus list.
 - Do not fabricate citations to specific works that are not in the corpus."""
@@ -836,12 +892,15 @@ def render_mermaid(diagram_code, height=420):
     st.components.v1.html(html, height=height, scrolling=False)
 
 
-def synthesise_corpus(corpus, config):
-    """Generate structured synthesis: pre-computed tables + AI narrative in user's voice."""
+def synthesise_corpus(corpus, config, themes=None):
+    """Generate structured synthesis: pre-computed tables + AI narrative in user's voice.
+    If themes (list of dicts) is provided, the synthesis is organized by emergent themes
+    instead of pre-defined tiers."""
     if not corpus:
         return None, "Corpus is empty."
 
     stats = compute_corpus_stats(corpus, config)
+    use_themes = bool(themes)
 
     # Build study listing for narrative context
     listing = "\n".join([
@@ -851,17 +910,29 @@ def synthesise_corpus(corpus, config):
         for c in corpus
     ])
 
+    # Build organizing-structure block
+    if use_themes:
+        organizing_block = "EMERGENT THEMES (use these to structure the synthesis):\n" + "\n".join([
+            f"  Theme {i+1} — {t.get('name','')}\n"
+            f"    Definition: {t.get('definition','')}\n"
+            f"    Supporting studies: {', '.join(t.get('supporting_studies', [])[:8])}\n"
+            f"    Theoretical link: {t.get('theoretical_link','')}\n"
+            for i, t in enumerate(themes)
+        ])
+    else:
+        organizing_block = f"""Tier distribution:
+{chr(10).join([f"  • {t}: {c}" for t, c in stats['tier_counts'].items() if c > 0])}
+
+Kirkpatrick level distribution:
+{chr(10).join([f"  • {k}: {c}" for k, c in stats['kp_counts'].items() if c > 0])}"""
+
     # Pass pre-computed stats to Claude as context
     stats_summary = f"""PRE-COMPUTED CORPUS STATISTICS (use these exact numbers in your narrative — do not recompute):
 
 Total studies: {stats['n']}
 Year range: {stats['year_range']}
 
-Tier distribution:
-{chr(10).join([f"  • {t}: {c}" for t, c in stats['tier_counts'].items() if c > 0])}
-
-Kirkpatrick level distribution:
-{chr(10).join([f"  • {k}: {c}" for k, c in stats['kp_counts'].items() if c > 0])}
+{organizing_block}
 
 Database sourcing:
 {chr(10).join([f"  • {d}: {c}" for d, c in sorted(stats['db_counts'].items(), key=lambda x: -x[1])])}
@@ -874,12 +945,268 @@ Study design distribution (from extractions):
 """
 
     user_msg = stats_summary + "\n\nCORPUS LISTING:\n" + listing
-    text, err = call_claude(build_synth_system_prompt(), user_msg, max_tokens=6000)
+    system_prompt = build_synth_system_prompt(use_themes=use_themes, themes=themes)
+    text, err = call_claude(system_prompt, user_msg, max_tokens=6000)
 
     if err:
         return None, err
 
-    return {"narrative": text, "stats": stats}, None
+    return {"narrative": text, "stats": stats, "themes": themes, "use_themes": use_themes}, None
+
+
+# ─────────────────────────────────────────────────────────────────
+# THEME DISCOVERY (emergent themes from extracted data)
+# ─────────────────────────────────────────────────────────────────
+
+def build_theme_discovery_prompt():
+    c = st.session_state.config
+    return f"""You are a qualitative analyst conducting an inductive thematic analysis on extracted study data for a scoping review on: {c['research_topic']}.
+
+Theoretical anchor: {c['theoretical_anchor']}
+
+TASK
+You will receive the extracted findings from every included study. Conduct an inductive thematic analysis — themes must emerge from the data, NOT be imposed from a pre-existing framework. Identify 4-7 distinct themes that capture the most salient patterns across the corpus.
+
+GUIDELINES
+- Each theme should be data-driven and supported by 3 or more studies
+- Themes should be conceptually distinct (minimal overlap)
+- Theme names should be concise and analytically descriptive (5-9 words), not generic ("Findings", "Results")
+- For each theme, identify which studies support it (by author + year)
+- Tentatively note how each theme relates to the theoretical anchor
+- Avoid assertive language — describe what the studies "appear to suggest" or "tentatively indicate"
+
+Respond ONLY as valid JSON, no markdown, no preamble:
+{{
+  "themes": [
+    {{
+      "name": "Concise analytical theme name",
+      "definition": "One-to-two-sentence definition framed tentatively (e.g., 'The findings appear to indicate that...')",
+      "supporting_studies": ["Author Year", "Author Year", "Author Year"],
+      "theoretical_link": "One sentence on how this theme tentatively relates to the theoretical anchor",
+      "tensions": "One sentence noting any contradictions or open questions within this theme (or empty string if none)"
+    }}
+  ]
+}}"""
+
+
+def discover_themes(corpus):
+    """Run inductive theme discovery across the extracted corpus."""
+    if not corpus:
+        return None, "Corpus is empty — add studies first."
+
+    extracted = [c for c in corpus if c.get("extraction")]
+    if len(extracted) < 3:
+        return None, f"Theme discovery needs at least 3 extracted studies (have {len(extracted)}). Run AI extraction first."
+
+    # Build compact study summaries for the analysis
+    lines = []
+    for c in extracted:
+        e = c["extraction"]
+        author = (c.get("authors") or "").split(",")[0].strip()
+        year = c.get("year", "")
+        finding = e.get("keyFinding") or ""
+        outcome = e.get("educationalOutcome") or ""
+        country = e.get("country") or ""
+        design = e.get("design") or ""
+        lines.append(
+            f"- {author} ({year}) [{country}, {design}]: outcome = {outcome}; finding = {finding}"
+        )
+
+    user_msg = f"EXTRACTED CORPUS (n={len(extracted)} studies):\n\n" + "\n".join(lines)
+    text, err = call_claude(build_theme_discovery_prompt(), user_msg, max_tokens=3000)
+
+    if err:
+        return None, err
+
+    try:
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(cleaned)
+        themes = data.get("themes", [])
+        if not themes:
+            return None, "AI returned no themes — try running again with more extracted studies."
+        return themes, None
+    except Exception as e:
+        return None, f"Could not parse theme JSON: {e}\n\nRaw response (first 500 chars): {text[:500]}"
+
+
+# ─────────────────────────────────────────────────────────────────
+# CONVERSATIONAL REFINEMENT (chat with the synthesis)
+# ─────────────────────────────────────────────────────────────────
+
+def build_refinement_prompt():
+    c = st.session_state.config
+    style_section = ""
+    if c.get("writing_style_sample", "").strip():
+        style_section = f"""
+
+The author's writing style sample (mimic precisely if rewriting prose):
+\"\"\"
+{c['writing_style_sample'][:1500]}
+\"\"\"
+"""
+
+    return f"""You are a synthesis collaborator helping refine a scoping review on: {c['research_topic']}.
+
+Theoretical anchor: {c['theoretical_anchor']}
+{style_section}
+
+You will receive the current synthesis text and a user request. Respond conversationally — directly address what the user asked. If they ask you to rewrite a section, return the rewritten section in proper prose (no headers needed). If they ask a question, answer it. If they want you to add a counter-argument, draft it. If they want less hedging, rewrite with measured (but not absolute) language.
+
+HARD RULES
+- Always remain in measured academic voice. Avoid "proves", "clearly", "definitively", "must", "always", "never", "the evidence shows" (use "the evidence suggests").
+- Mimic the author's writing style (sentence rhythm, hedging patterns, connective adverbs Moreover/Therefore/However/Interestingly).
+- Do not fabricate studies or findings beyond what is in the corpus listing.
+- If the user asks for something the corpus cannot support, say so honestly and offer the closest defensible alternative.
+- Keep responses focused — answer the specific question or rewrite the specific section requested. Do not regenerate the whole synthesis unless explicitly asked."""
+
+
+def refine_synthesis(current_narrative, chat_history, user_message, corpus):
+    """Refine the synthesis based on a user instruction.
+    Returns (response_text, error)."""
+
+    # Build compact corpus listing for context
+    corpus_lines = []
+    for c in corpus[:50]:  # cap for context window
+        author = (c.get("authors") or "").split(",")[0].strip()
+        year = c.get("year", "")
+        e = c.get("extraction") or {}
+        finding = (e.get("keyFinding") or c.get("title") or "")[:120]
+        corpus_lines.append(f"- {author} ({year}): {finding}")
+
+    # Build conversation context
+    history_text = ""
+    for turn in chat_history[-6:]:  # last 6 turns to manage context
+        history_text += f"\n[USER]: {turn['user']}\n[ASSISTANT]: {turn['assistant'][:800]}\n"
+
+    user_msg = f"""CURRENT SYNTHESIS:
+\"\"\"
+{current_narrative[:8000]}
+\"\"\"
+
+CORPUS (for grounding — n={len(corpus)}):
+{chr(10).join(corpus_lines)}
+
+PRIOR CONVERSATION:
+{history_text if history_text else "(none yet)"}
+
+USER REQUEST:
+{user_message}
+
+Respond directly to the request. If rewriting a section, return the rewritten prose. If answering a question, give a focused answer."""
+
+    text, err = call_claude(build_refinement_prompt(), user_msg, max_tokens=3000)
+    if err:
+        return None, err
+    return text, None
+
+
+# ─────────────────────────────────────────────────────────────────
+# JOURNAL TRENDS DISCOVERY
+# ─────────────────────────────────────────────────────────────────
+
+DENTAL_JOURNAL_SHORTLIST = [
+    "Journal of Dental Education",
+    "European Journal of Dental Education",
+    "Journal of Dentistry",
+    "Journal of Dental Research",
+    "International Dental Journal",
+    "BMC Medical Education",
+    "BMC Oral Health",
+    "JMIR Medical Education",
+    "Medical Education",
+    "Journal of the American Dental Association",
+    "British Dental Journal",
+    "Caries Research",
+    "Clinical Oral Investigations",
+    "Frontiers in Dental Medicine",
+]
+
+
+def search_journals_recent(journals, years_back, max_per_journal):
+    """Pull recent papers from a list of journals using PubMed [Journal] tag.
+    Returns combined deduplicated list of papers from each journal."""
+    from datetime import datetime as _dt
+    current_year = _dt.now().year
+    date_from = current_year - years_back
+    date_to = current_year
+
+    all_items = []
+    per_journal_counts = {}
+    for j in journals:
+        # Use PubMed Journal tag — exact-match by title
+        # Use sort order = pub date desc via the API
+        query = f'"{j}"[Journal]'
+        items, total = search_pubmed(query, date_from, date_to, max_per_journal)
+        per_journal_counts[j] = {"retrieved": len(items), "total": total}
+        all_items.extend(items)
+
+    # Dedup by PMID
+    seen = set()
+    unique = []
+    for it in all_items:
+        pmid = it.get("pmid") or it.get("id")
+        if pmid and pmid not in seen:
+            seen.add(pmid)
+            unique.append(it)
+
+    return unique, per_journal_counts
+
+
+def build_trends_prompt():
+    c = st.session_state.config
+    return f"""You are a research-trends analyst examining a recent corpus of papers from major journals in a specific field.
+
+Research focus: {c['research_topic']}
+
+TASK
+You will receive a list of titles + (where available) abstracts from recent journal publications. Identify 5-8 distinct emerging trends or themes that appear in this corpus. For each trend:
+- Give a concise analytical name (5-9 words)
+- Provide a one-sentence definition framed tentatively
+- Cite 3-5 supporting paper titles or first-author-year tags
+- Note tentative significance for the research focus
+
+Avoid assertive phrasing. Use hedging ("appears to", "tentatively", "may indicate").
+
+Respond ONLY as valid JSON:
+{{
+  "trends": [
+    {{
+      "name": "Concise trend name",
+      "definition": "Tentative one-sentence definition",
+      "supporting_papers": ["First-author Year", "First-author Year"],
+      "significance": "One sentence on why this trend may matter for the research focus"
+    }}
+  ],
+  "summary": "Two-sentence overall summary of the trends landscape"
+}}"""
+
+
+def analyze_journal_trends(papers):
+    """Use Claude to extract emerging trends from a corpus of recent journal papers."""
+    if not papers:
+        return None, "No papers to analyze."
+
+    lines = []
+    for p in papers[:200]:  # cap for context
+        author = (p.get("authors") or "").split(",")[0].strip()
+        year = p.get("year", "")
+        title = p.get("title", "")
+        abstract = (p.get("abstract") or "")[:300]
+        lines.append(f"- {author} ({year}) [{p.get('journal','')}]: {title}")
+        if abstract:
+            lines.append(f"    Abstract: {abstract}")
+
+    user_msg = f"CORPUS OF RECENT JOURNAL PAPERS (n={len(papers)}):\n\n" + "\n".join(lines)
+    text, err = call_claude(build_trends_prompt(), user_msg, max_tokens=4000)
+    if err:
+        return None, err
+
+    try:
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(cleaned)
+        return data, None
+    except Exception as e:
+        return None, f"Could not parse trends JSON: {e}\n\nRaw (first 500 chars): {text[:500]}"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -1296,7 +1623,7 @@ with st.sidebar:
 # TABS
 # ─────────────────────────────────────────────────────────────────
 
-tab_search, tab_screen, tab_corpus, tab_synth = st.tabs(["🔍 Search", "✓ Screen", "📂 Corpus", "📝 Synthesis"])
+tab_search, tab_screen, tab_corpus, tab_synth, tab_trends = st.tabs(["🔍 Search", "✓ Screen", "📂 Corpus", "📝 Synthesis", "📈 Trends"])
 
 # ─── SEARCH TAB ────────────────────────────────────────────────
 with tab_search:
@@ -1318,7 +1645,14 @@ with tab_search:
     with c2:
         date_to = st.number_input("To year", min_value=1990, max_value=2030, value=2026)
     with c3:
-        max_per_db = st.slider("Max per DB", 10, 200, 50, step=10, help="How many results to fetch from EACH database. 50 per DB = up to 150 total.")
+        max_per_db = st.number_input(
+            "Max per DB",
+            min_value=10,
+            max_value=2000,
+            value=200,
+            step=50,
+            help="How many results to fetch from EACH database. Set higher (500-1000) for comprehensive sweeps like PRISMA-ScR systematic searches. Fetching 1000+ may take 1-2 minutes due to batched abstract retrieval.",
+        )
     with c4:
         st.write("")
         st.write("")
@@ -1620,24 +1954,74 @@ with tab_synth:
     n_corpus = len(st.session_state.corpus)
     has_style = bool(st.session_state.config.get("writing_style_sample", "").strip())
     n_extracted = sum(1 for c in st.session_state.corpus if c.get("extraction"))
+    has_themes = bool(st.session_state.themes)
 
     cap_bits = [f"Corpus n={n_corpus}"]
     cap_bits.append("✓ writing style loaded" if has_style else "⚠ no writing style set")
     cap_bits.append(f"{n_extracted}/{n_corpus} extracted")
+    cap_bits.append(f"✓ {len(st.session_state.themes)} themes discovered" if has_themes else "tier-based")
     st.caption(" · ".join(cap_bits))
 
     if n_corpus == 0:
         st.info("Add studies to the corpus first, then optionally run AI extraction for richer geographic/design tables.")
     else:
+        # ─── Theme discovery panel ───
+        with st.expander("🧩 Discover emergent themes (inductive thematic analysis)", expanded=has_themes):
+            st.caption("Run AI thematic analysis on extracted study findings. Themes emerge from the data inductively, replacing pre-defined tiers in the synthesis structure.")
+
+            tc1, tc2 = st.columns([2, 1])
+            with tc1:
+                if st.button(
+                    "🧩 Discover themes from extractions",
+                    type="secondary",
+                    disabled=not client or n_extracted < 3,
+                    help=f"{n_extracted} extracted studies available (need ≥3)",
+                ):
+                    if client:
+                        with st.spinner(f"Analyzing {n_extracted} extracted studies..."):
+                            themes, err = discover_themes(st.session_state.corpus)
+                            if themes:
+                                st.session_state.themes = themes
+                                st.session_state.synth_data = None  # invalidate prior synthesis
+                                st.rerun()
+                            else:
+                                st.error(f"Error: {err}")
+            with tc2:
+                if has_themes and st.button("Clear themes", type="secondary"):
+                    st.session_state.themes = None
+                    st.session_state.synth_data = None
+                    st.rerun()
+
+            if has_themes:
+                st.markdown("**Discovered themes:**")
+                for i, t in enumerate(st.session_state.themes, 1):
+                    with st.container(border=True):
+                        st.markdown(f"**Theme {i} — {t.get('name','')}**")
+                        st.markdown(t.get("definition", ""))
+                        if t.get("supporting_studies"):
+                            st.caption(f"Supporting studies: {', '.join(t['supporting_studies'][:8])}")
+                        if t.get("theoretical_link"):
+                            st.caption(f"🎯 Theoretical link: {t['theoretical_link']}")
+                        if t.get("tensions"):
+                            st.caption(f"⚠️ Tensions: {t['tensions']}")
+
+        st.divider()
+
         c1, c2 = st.columns([2, 1])
         with c1:
-            if st.button("✨ Generate structured synthesis", type="primary", disabled=not client):
+            synth_label = "✨ Generate synthesis (theme-based)" if has_themes else "✨ Generate synthesis (tier-based)"
+            if st.button(synth_label, type="primary", disabled=not client):
                 if client:
                     with st.spinner("Computing statistics and generating narrative (this may take 60–90s)..."):
-                        result, err = synthesise_corpus(st.session_state.corpus, st.session_state.config)
+                        result, err = synthesise_corpus(
+                            st.session_state.corpus,
+                            st.session_state.config,
+                            themes=st.session_state.themes,
+                        )
                         if result:
                             st.session_state.synth_data = result
                             st.session_state.synth_text = result["narrative"]
+                            st.session_state.synth_chat = []  # reset chat on new synthesis
                         else:
                             st.error(f"Error: {err}")
         with c2:
@@ -1646,17 +2030,31 @@ with tab_synth:
                 stats = st.session_state.synth_data["stats"]
                 narrative = st.session_state.synth_data["narrative"]
                 sections = [s.strip() for s in narrative.split("===SECTION===")]
-                section_titles = [
-                    "1. Corpus Overview",
-                    "2. Tier Distribution and Evidence Weight",
-                    "3. Kirkpatrick Outcome Ceiling",
-                    "4. Geographic and Contextual Variation",
-                    "5. Cross-Tier Patterns",
-                    "6. Comparison with Available Literature",
-                    "7. Integration Across Tiers",
-                    "8. Argument and Implications",
-                    "9. Conclusion",
-                ]
+                use_themes_here = st.session_state.synth_data.get("use_themes", False)
+                if use_themes_here:
+                    section_titles = [
+                        "1. Corpus Overview",
+                        "2. Thematic Landscape",
+                        "3. Outcome Evidence Profile",
+                        "4. Geographic and Contextual Variation",
+                        "5. Cross-Theme Patterns",
+                        "6. Comparison with Available Literature",
+                        "7. Integration Across Themes",
+                        "8. Argument and Implications",
+                        "9. Conclusion",
+                    ]
+                else:
+                    section_titles = [
+                        "1. Corpus Overview",
+                        "2. Tier Distribution and Evidence Weight",
+                        "3. Kirkpatrick Outcome Ceiling",
+                        "4. Geographic and Contextual Variation",
+                        "5. Cross-Tier Patterns",
+                        "6. Comparison with Available Literature",
+                        "7. Integration Across Tiers",
+                        "8. Argument and Implications",
+                        "9. Conclusion",
+                    ]
 
                 # Compute PRISMA numbers for the markdown export
                 prisma = compute_prisma_numbers(st.session_state.results, st.session_state.corpus)
@@ -1821,16 +2219,32 @@ with tab_synth:
 
             st.divider()
 
-            # Section 2: Tier Distribution
-            st.markdown("### 2. Tier Distribution and Evidence Weight")
-            st.markdown(build_tier_table(stats, st.session_state.config))
+            # Section 2: Tier Distribution OR Thematic Landscape
+            use_themes_display = st.session_state.synth_data.get("use_themes", False)
+            if use_themes_display:
+                st.markdown("### 2. Thematic Landscape")
+                themes_local = st.session_state.synth_data.get("themes") or []
+                # Build a theme summary table
+                if themes_local:
+                    rows = ["| # | Theme | Supporting studies |", "|---|---|---|"]
+                    for i, t in enumerate(themes_local, 1):
+                        n_studies = len(t.get("supporting_studies", []))
+                        rows.append(f"| {i} | {t.get('name','')} | {n_studies} |")
+                    st.markdown("\n".join(rows))
+            else:
+                st.markdown("### 2. Tier Distribution and Evidence Weight")
+                st.markdown(build_tier_table(stats, st.session_state.config))
             st.markdown(sections[1])
 
             st.divider()
 
-            # Section 3: Kirkpatrick Ceiling
-            st.markdown("### 3. Kirkpatrick Outcome Ceiling")
-            st.markdown(build_kp_table(stats))
+            # Section 3: Kirkpatrick Ceiling OR Outcome Evidence Profile
+            if use_themes_display:
+                st.markdown("### 3. Outcome Evidence Profile")
+                st.markdown(build_kp_table(stats))
+            else:
+                st.markdown("### 3. Kirkpatrick Outcome Ceiling")
+                st.markdown(build_kp_table(stats))
             st.markdown(sections[2])
 
             st.divider()
@@ -1846,8 +2260,11 @@ with tab_synth:
 
             st.divider()
 
-            # Section 5: Cross-Tier Patterns
-            st.markdown("### 5. Cross-Tier Patterns")
+            # Section 5: Cross-Tier or Cross-Theme Patterns
+            if use_themes_display:
+                st.markdown("### 5. Cross-Theme Patterns")
+            else:
+                st.markdown("### 5. Cross-Tier Patterns")
             st.markdown(sections[4])
 
             st.divider()
@@ -1861,8 +2278,11 @@ with tab_synth:
 
             st.divider()
 
-            # Section 7: Integration Across Tiers
-            st.markdown("### 7. Integration Across Tiers")
+            # Section 7: Integration Across Tiers / Themes
+            if use_themes_display:
+                st.markdown("### 7. Integration Across Themes")
+            else:
+                st.markdown("### 7. Integration Across Tiers")
             st.markdown(sections[6])
 
             st.divider()
@@ -1876,3 +2296,150 @@ with tab_synth:
             # Section 9: Conclusion
             st.markdown("## Conclusion")
             st.markdown(sections[8])
+
+            st.divider()
+
+            # ──────────────────── CONVERSATIONAL REFINEMENT ────────────────────
+            st.markdown("## 💬 Refine the synthesis")
+            st.caption("Ask follow-up questions or request rewrites. The chat sees the current synthesis + your corpus. Suggested prompts: *Rewrite Section 8 with a stronger argument*, *Add a counter-position to the conclusion*, *Make the comparison section less hedged*, *Connect Theme 1 and Theme 3 more explicitly*.")
+
+            # Display chat history
+            for turn in st.session_state.synth_chat:
+                with st.chat_message("user"):
+                    st.markdown(turn["user"])
+                with st.chat_message("assistant"):
+                    st.markdown(turn["assistant"])
+
+            # Chat input
+            user_msg = st.chat_input("Ask a question or request a rewrite…", disabled=not client)
+            if user_msg and client:
+                with st.chat_message("user"):
+                    st.markdown(user_msg)
+                with st.chat_message("assistant"):
+                    with st.spinner("Refining..."):
+                        response, err = refine_synthesis(
+                            current_narrative=st.session_state.synth_data["narrative"],
+                            chat_history=st.session_state.synth_chat,
+                            user_message=user_msg,
+                            corpus=st.session_state.corpus,
+                        )
+                        if response:
+                            st.markdown(response)
+                            st.session_state.synth_chat.append({"user": user_msg, "assistant": response})
+                        else:
+                            st.error(f"Error: {err}")
+
+            if st.session_state.synth_chat:
+                if st.button("🗑️ Clear chat history"):
+                    st.session_state.synth_chat = []
+                    st.rerun()
+
+
+# ─── TRENDS TAB ─────────────────────────────────────────────────
+with tab_trends:
+    st.subheader("📈 Recent trends in major journals")
+    st.caption("Pull recent papers from a shortlist of journals (via PubMed) and use AI to surface emerging trends. Useful for scoping out a research area or finding angles a manuscript could position itself against.")
+
+    # Journal selection
+    selected_journals = st.multiselect(
+        "Journals to include",
+        DENTAL_JOURNAL_SHORTLIST,
+        default=DENTAL_JOURNAL_SHORTLIST[:5],
+        help="Default shortlist is dental/medical-education-oriented. Add custom journals below if needed.",
+    )
+
+    custom_journals_text = st.text_area(
+        "Additional journals (one per line, exact PubMed journal title)",
+        value="",
+        height=80,
+        help="E.g., 'Frontiers in Education' or 'Computers & Education'. Use the exact title as it appears in PubMed.",
+    )
+    if custom_journals_text.strip():
+        custom_journals = [j.strip() for j in custom_journals_text.split("\n") if j.strip()]
+        selected_journals = selected_journals + custom_journals
+
+    tc1, tc2, tc3 = st.columns([1, 1, 1])
+    with tc1:
+        years_back = st.number_input("Years back", min_value=1, max_value=10, value=2)
+    with tc2:
+        max_per_journal = st.number_input("Max papers per journal", min_value=10, max_value=200, value=30, step=10)
+    with tc3:
+        st.write("")
+        st.write("")
+        trends_btn = st.button("🔍 Pull recent papers", type="primary", use_container_width=True, disabled=not selected_journals)
+
+    if trends_btn:
+        with st.spinner(f"Fetching from {len(selected_journals)} journals..."):
+            papers, per_journal = search_journals_recent(selected_journals, years_back, max_per_journal)
+            st.session_state.trends_papers = papers
+            # Show per-journal counts
+            count_lines = []
+            for j in selected_journals:
+                d = per_journal.get(j, {"retrieved": 0, "total": 0})
+                count_lines.append(f"  • {j}: {d['retrieved']:,} retrieved (of {d['total']:,} total)")
+            st.success(f"Pulled {len(papers)} unique papers across {len(selected_journals)} journals.")
+            st.code("\n".join(count_lines), language="text")
+
+    if st.session_state.trends_papers:
+        st.markdown(f"### Recent corpus: {len(st.session_state.trends_papers)} papers")
+
+        # Topic filter input
+        topic_filter = st.text_input(
+            "Optional: filter papers by keyword (case-insensitive, searches title + abstract)",
+            value="",
+            placeholder="e.g., artificial intelligence, accreditation, generative",
+        )
+        filtered = st.session_state.trends_papers
+        if topic_filter.strip():
+            kw = topic_filter.lower().strip()
+            filtered = [
+                p for p in st.session_state.trends_papers
+                if kw in (p.get("title", "") + " " + p.get("abstract", "")).lower()
+            ]
+            st.caption(f"Filter active: {len(filtered)} of {len(st.session_state.trends_papers)} papers match")
+
+        # Preview table
+        if filtered:
+            df = pd.DataFrame([{
+                "Year": p.get("year", ""),
+                "Authors": (p.get("authors", "") or "")[:60],
+                "Title": (p.get("title", "") or "")[:120],
+                "Journal": p.get("journal", ""),
+                "Abstract": "✓" if p.get("abstract") else "—",
+            } for p in filtered[:200]])
+            st.dataframe(df, hide_index=True, use_container_width=True, height=300)
+
+            # Trend analysis
+            if st.button("🧠 Analyze emerging trends with AI", type="primary", disabled=not client):
+                if client:
+                    with st.spinner(f"Analyzing {len(filtered)} papers for trends..."):
+                        trends, err = analyze_journal_trends(filtered)
+                        if trends:
+                            st.session_state.trends_data = trends
+                        else:
+                            st.error(f"Error: {err}")
+
+        if st.session_state.trends_data:
+            st.divider()
+            st.markdown("### 📊 Emerging trends")
+            data = st.session_state.trends_data
+            if data.get("summary"):
+                st.info(data["summary"])
+            for i, t in enumerate(data.get("trends", []), 1):
+                with st.container(border=True):
+                    st.markdown(f"**Trend {i} — {t.get('name','')}**")
+                    st.markdown(t.get("definition", ""))
+                    if t.get("supporting_papers"):
+                        st.caption(f"Examples: {', '.join(t['supporting_papers'][:6])}")
+                    if t.get("significance"):
+                        st.caption(f"💡 {t['significance']}")
+
+            # Optional: add these trends papers to corpus
+            if st.button("➕ Add filtered papers to main corpus for screening"):
+                added = 0
+                existing_ids = {r.get("id") for r in st.session_state.results}
+                for p in filtered:
+                    if p.get("id") not in existing_ids:
+                        st.session_state.results.append(p)
+                        added += 1
+                st.success(f"Added {added} new papers to search results. Switch to 'Screen' tab to triage them.")
