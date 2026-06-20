@@ -370,43 +370,82 @@ STYLE SAMPLE:
 
 Distinctive features to replicate:
 - Opens sentences with connective adverbs: "Moreover,", "Therefore,", "However,", "Interestingly,", "In fact,", "Briefly,", "Consequently,", "Nevertheless,"
-- Hedging language: "may," "tend to," "could be related to," "It has been reported that"
+- Hedging language throughout: "may," "tend to," "could be related to," "appears to," "It has been reported that," "the findings suggest"
 - Scholarly third-person voice; no first person; no "we"
 - Defines a concept, then illustrates with "For example,"
-- Closes paragraphs with synthesis using "Therefore," or "To conclude," or "It is now clear that"
+- Closes paragraphs with measured synthesis using "Therefore," or "It would seem that" or "Such findings suggest" — NOT with absolute claims
 - Medium-long sentences with multiple clauses linked by commas
 - Avoids markdown bold within narrative prose
 ═══════════════════════════════════════════════
+
+╔═══════════════════════════════════════════════╗
+║ HARD RULE: NO ASSERTIVE OR ABSOLUTE PHRASING  ║
+╚═══════════════════════════════════════════════╝
+You MUST avoid all forms of definitive, absolute, or assertive claims. The narrative must remain measured, tentative, and hedged at every turn.
+
+PROHIBITED PHRASES (do NOT use any of these):
+- "This proves..." / "It proves..." / "Proves that..."
+- "Clearly demonstrates..." / "Clearly shows..."
+- "Definitively..." / "Definitely..." / "Undoubtedly..." / "Without doubt..."
+- "It is certain that..." / "Certainly..."
+- "Must..." (in claims about what the field/policy must do)
+- "Always..." / "Never..." / "All studies..."
+- "The evidence shows..." (use "The evidence suggests..." instead)
+- "This establishes..." / "This confirms..."
+- "Strongly indicates..." (use "appears to indicate..." instead)
+- "It is now clear that..." (use "Such findings suggest..." instead)
+
+REQUIRED HEDGING (use these patterns instead):
+- "The findings suggest that..." / "The evidence appears to indicate..."
+- "It would seem that..." / "There is some indication that..."
+- "The available data point toward..." / "These observations may reflect..."
+- "Such patterns could be interpreted as..." / "One possible reading of..."
+- "Within the limits of the included studies..." / "On the basis of this corpus..."
+- "Tentatively..." / "Provisionally..." / "Cautiously..."
+
+Even in the Conclusion, claims must be framed tentatively. Replace "To conclude, it is now clear that..." with "To conclude, the synthesis tentatively suggests that..." or "On balance, the corpus appears to support..."
 """
     return f"""You are a PhD-level synthesis analyst writing in a specific author's voice for a scoping review on: {c['research_topic']}.
 
 Theoretical anchor: {c['theoretical_anchor']}
 {style_section}
 TASK
-You will receive (1) pre-computed statistical tables about a corpus, and (2) a list of included studies. Your job is to produce ONLY the NARRATIVE TEXT for each numbered section described below. Do NOT regenerate the tables — they are inserted programmatically. Do NOT add markdown headers (the section headings are inserted by the system). Each narrative section should be 100–200 words of flowing prose in the author's voice.
+You will receive (1) pre-computed statistical tables about a corpus, and (2) a list of included studies. Your job is to produce ONLY the NARRATIVE TEXT for each numbered section described below. Do NOT regenerate the tables — they are inserted programmatically. Do NOT add markdown headers (the section headings are inserted by the system).
 
-Produce narrative for SEVEN sections, separated by the literal marker `===SECTION===` on its own line:
+Produce narrative for NINE sections, separated by the literal marker `===SECTION===` on its own line.
 
-1. CORPUS OVERVIEW — interpret what the corpus size, year range, database spread, and tier mix reveal about the maturity and shape of the evidence base.
+RESULTS SECTIONS (sections 1–5, factual interpretation, 100–180 words each)
 
-2. TIER DISTRIBUTION — interpret which tiers carry the most weight, which are under-represented, and what this implies for the strength of the evidence in answering the review question.
+1. CORPUS OVERVIEW — Interpret what the corpus size, year range, database spread, and tier mix tentatively suggest about the maturity and shape of the evidence base. Hedge throughout.
 
-3. KIRKPATRICK CEILING — interpret the highest outcome level reached across the intervention studies and what this means for policy claims that can or cannot be made.
+2. TIER DISTRIBUTION AND EVIDENCE WEIGHT — Interpret which tiers appear to carry the most weight, which seem under-represented, and what this may imply for the strength of the evidence. Refer to specific tier names explicitly.
 
-4. GEOGRAPHIC AND CONTEXTUAL VARIATION — discuss how the spread (or absence) of geographic variation affects generalisability and the application of the theoretical anchor.
+3. KIRKPATRICK OUTCOME CEILING — Interpret the highest outcome level reached across the intervention studies and what this may mean for policy claims that could or could not be tentatively supported.
 
-5. KEY RESEARCH GAPS — identify 3-4 specific gaps the corpus reveals, anchoring each gap in the theoretical framework.
+4. GEOGRAPHIC AND CONTEXTUAL VARIATION — Discuss how the spread (or absence) of geographic variation could affect generalisability and the application of the theoretical anchor.
 
-6. POLICY IMPLICATIONS — distinguish what the corpus can defensibly support at the level of accreditation/regulatory standards from what it cannot, and why.
+5. CROSS-TIER PATTERNS — Identify 2-3 patterns that appear across tiers (e.g., how Tier 3 readiness findings may relate to Tier 4 intervention outcomes, how Tier 1 frameworks may be reflected — or absent — in Tier 4 interventions). Make explicit cross-references between tier numbers so the Discussion can build on them.
 
-7. CONCLUSION — a closing paragraph synthesising the review's contribution in the author's voice, opening with "To conclude," or "It is now clear that".
+DISCUSSION SECTIONS (sections 6–8, building toward an argument, 200–300 words each)
+
+6. COMPARISON WITH AVAILABLE LITERATURE — Position the findings against what comparable scoping reviews, position papers, and frameworks in the wider field have reported. Note convergences and divergences. Where the corpus appears to extend or contradict prior reviews, say so tentatively. Reference the theoretical anchor explicitly. If specific comparator works are not visible in the corpus, frame the comparison at the level of general patterns reported elsewhere in the discipline.
+
+7. INTEGRATION ACROSS TIERS — Build a sustained argument that explicitly links the tier-level findings from the Results section. For example, frame Tier 3 (readiness) and Tier 4 (intervention) findings as complementary or contradictory in light of the Tier 1 (framework). Use phrases like "When read in conjunction with...", "Taken together, Tiers 2 and 3 appear to suggest...", "Such a pattern may be interpreted in light of the theoretical anchor...". This section must reference specific tier numbers and pull the threads together.
+
+8. ARGUMENT AND IMPLICATIONS — Develop the strongest defensible argument the corpus appears to support, while remaining hedged throughout. Distinguish what the corpus may tentatively support at the level of policy/accreditation standards from what it does not. Anticipate counter-positions and address them measuredly. Close this section with a clear (but hedged) claim about what the synthesis appears to contribute.
+
+CONCLUSION (section 9, 120–180 words)
+
+9. CONCLUSION — A closing paragraph framed measuredly. Open with phrases such as "To conclude, the synthesis tentatively suggests that...", "On balance, the corpus appears to indicate...", or "Within the limits of the included studies, the present review provisionally points toward...". Recap the central argument from Section 8 in hedged form, restate the most important research gap, and gesture toward future work.
 
 CRITICAL RULES
 - Output narrative ONLY. No markdown headers, no tables, no bullet lists.
-- Use the literal marker `===SECTION===` between sections.
+- Use the literal marker `===SECTION===` between sections — exactly nine sections.
 - Mimic the writing style sample precisely.
-- Reference specific tier names, Kirkpatrick levels, and statistics from the data provided.
-- Do not invent studies or findings beyond what is in the corpus list."""
+- Reference specific tier names and Kirkpatrick levels explicitly in Sections 5, 7, and 8.
+- Avoid every form of assertive phrasing listed above. Hedge throughout.
+- Do not invent studies or findings beyond what is in the corpus list.
+- Do not fabricate citations to specific works that are not in the corpus."""
 
 
 def compute_corpus_stats(corpus, config):
@@ -504,8 +543,257 @@ def build_db_table(stats):
     return "\n".join(rows)
 
 
+def _short_authors(authors):
+    """Convert 'Smith J, Jones K et al.' to 'Smith et al.' or 'Smith and Jones' if 2 authors."""
+    if not authors:
+        return "—"
+    a = authors.strip()
+    # If already abbreviated with et al
+    if "et al" in a.lower():
+        first = a.split(",")[0].strip().split(" ")[0]
+        return f"{first} et al."
+    parts = [p.strip() for p in a.split(",") if p.strip()]
+    if len(parts) == 1:
+        return parts[0].split(" ")[0]
+    elif len(parts) == 2:
+        return f"{parts[0].split(' ')[0]} & {parts[1].split(' ')[0]}"
+    else:
+        return f"{parts[0].split(' ')[0]} et al."
+
+
+def _clean_field(v, max_len=80):
+    """Clean a field value for table display — handle ?, None, empty, and truncate."""
+    if v is None:
+        return "—"
+    s = str(v).strip().lstrip("?").strip()
+    if not s:
+        return "—"
+    if len(s) > max_len:
+        return s[:max_len - 1].rstrip() + "…"
+    return s
+
+
+def build_overview_table_df(corpus, config):
+    """Build a pandas DataFrame of included studies for Streamlit display.
+    Sorted by tier order then year ascending."""
+    if not corpus:
+        return None
+
+    tier_order = {t: i for i, t in enumerate(config["tiers"])}
+    tier_order[""] = 999  # untiered at end
+
+    def sort_key(c):
+        return (tier_order.get(c.get("tier", ""), 999), c.get("year", ""))
+
+    sorted_corpus = sorted(corpus, key=sort_key)
+
+    rows = []
+    for i, c in enumerate(sorted_corpus, 1):
+        e = c.get("extraction") or {}
+        rows.append({
+            "#": i,
+            "Tier": c.get("tier", "—") or "—",
+            "Study": f"{_short_authors(c.get('authors',''))} ({c.get('year','')})",
+            "Country/Setting": _clean_field(e.get("country") or e.get("setting"), 40),
+            "Design (Sample)": (
+                _clean_field(e.get("design"), 50)
+                + (f"; n={_clean_field(e.get('sample'), 20)}" if e.get("sample") else "")
+            ),
+            "AI Tool": _clean_field(e.get("aiTool"), 40),
+            "Educational Outcome": _clean_field(e.get("educationalOutcome"), 70),
+            "Key Finding": _clean_field(e.get("keyFinding"), 100),
+            "Limitation": _clean_field(e.get("mainLimitation"), 70),
+            "Kirkpatrick": c.get("kp", "N/A"),
+            "PMID/DOI": c.get("pmid", ""),
+        })
+    return pd.DataFrame(rows)
+
+
+def build_overview_table_md(corpus, config):
+    """Build a markdown overview table grouped by tier (manuscript style)."""
+    if not corpus:
+        return ""
+
+    tier_order = {t: i for i, t in enumerate(config["tiers"])}
+    grouped = {}
+    for c in corpus:
+        tier = c.get("tier", "") or "(Untiered)"
+        grouped.setdefault(tier, []).append(c)
+
+    # Order tiers per config, untiered last
+    ordered_tiers = list(config["tiers"]) + [t for t in grouped if t not in config["tiers"]]
+
+    md = []
+    counter = 1
+    for tier in ordered_tiers:
+        studies = grouped.get(tier, [])
+        if not studies:
+            continue
+        studies_sorted = sorted(studies, key=lambda c: c.get("year", ""))
+        md.append(f"\n### {tier} (n = {len(studies)})\n")
+        md.append("| # | Study | Country | Design (Sample) | AI Tool | Educational Outcome | Key Finding | Kirkpatrick |")
+        md.append("|---|---|---|---|---|---|---|---|")
+        for c in studies_sorted:
+            e = c.get("extraction") or {}
+            authors_short = _short_authors(c.get("authors", ""))
+            study_cell = f"{authors_short} ({c.get('year','')})"
+            country = _clean_field(e.get("country") or e.get("setting"), 30).replace("|", "/")
+            design = _clean_field(e.get("design"), 40).replace("|", "/")
+            sample = _clean_field(e.get("sample"), 20).replace("|", "/")
+            design_cell = f"{design}" + (f"; n={sample}" if sample != "—" else "")
+            ai_tool = _clean_field(e.get("aiTool"), 30).replace("|", "/")
+            outcome = _clean_field(e.get("educationalOutcome"), 60).replace("|", "/")
+            finding = _clean_field(e.get("keyFinding"), 80).replace("|", "/")
+            kp = c.get("kp", "N/A")
+            md.append(f"| {counter} | {study_cell} | {country} | {design_cell} | {ai_tool} | {outcome} | {finding} | {kp} |")
+            counter += 1
+    return "\n".join(md)
+
+
+def categorise_exclusion(rationale):
+    """Categorise an exclusion rationale into a standard reason group.
+    Returns a short reason label suitable for the PRISMA flowchart."""
+    if not rationale:
+        return "Other / unspecified"
+    r = rationale.lower()
+    # Order matters — more specific patterns first
+    if any(t in r for t in ["clinical accuracy", "diagnostic accuracy", "ai accuracy"]):
+        return "Clinical AI accuracy (no educational outcome)"
+    if any(t in r for t in ["llm benchmark", "mcq", "multiple choice", "benchmark"]):
+        return "LLM/MCQ benchmark (no curricular implications)"
+    if any(t in r for t in ["editorial", "commentary", "letter", "non-peer", "opinion"]):
+        return "Editorial / commentary / non-peer-reviewed"
+    if any(t in r for t in ["pilot", "n < 30", "small sample", "single class"]):
+        return "Small pilot (no institutional scope)"
+    if any(t in r for t in ["kap", "knowledge attitude practice", "without curricular"]):
+        return "KAP without curricular recommendations"
+    if any(t in r for t in ["tangential", "not substantive", "mention only", "passing"]):
+        return "Tangential AI mention"
+    if any(t in r for t in ["language", "non-english"]):
+        return "Non-English / language barrier"
+    if any(t in r for t in ["duplicate", "already included"]):
+        return "Duplicate record"
+    if "criterion" in r or "criteria" in r:
+        return "Did not meet inclusion criteria"
+    return "Other / unspecified"
+
+
+def compute_prisma_numbers(results, corpus):
+    """Compute PRISMA-ScR numbers from screening results and final corpus."""
+    if not results:
+        return None
+
+    # Identification — by database
+    by_db = {}
+    for r in results:
+        by_db[r["db"]] = by_db.get(r["db"], 0) + 1
+
+    # Total records identified (sum across DBs before dedup is implicit;
+    # but `results` is already deduplicated. We'll report the deduped total
+    # as "records after duplicates removed").
+    n_after_dedup = len(results)
+
+    # Screening — pending = not yet decided
+    n_pending = sum(1 for r in results if r["decision"] == "Pending")
+    n_screened = n_after_dedup - n_pending
+    n_excluded_screening = sum(1 for r in results if r["decision"] == "Exclude")
+    n_maybe = sum(1 for r in results if r["decision"] == "Maybe")
+    n_included_screening = sum(1 for r in results if r["decision"] == "Include")
+
+    # Exclusion reason breakdown (from rationales on Exclude items)
+    exclusion_reasons = {}
+    for r in results:
+        if r["decision"] == "Exclude":
+            reason = categorise_exclusion(r.get("rationale", ""))
+            exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
+
+    # Final corpus
+    n_corpus = len(corpus)
+
+    return {
+        "by_db": by_db,
+        "n_after_dedup": n_after_dedup,
+        "n_screened": n_screened,
+        "n_pending": n_pending,
+        "n_excluded_screening": n_excluded_screening,
+        "n_maybe": n_maybe,
+        "n_included_screening": n_included_screening,
+        "n_corpus": n_corpus,
+        "exclusion_reasons": exclusion_reasons,
+    }
+
+
+def build_prisma_flowchart(prisma):
+    """Build a PRISMA-ScR style Mermaid flowchart.
+
+    Layout (top to bottom):
+      Identification: Records from each database
+      Deduplication: Records after duplicates removed
+      Screening: Records screened → Records excluded (with reason breakdown)
+      Eligibility: Records assessed for eligibility → Records uncertain (Maybe)
+      Included: Studies in final corpus
+    """
+    if not prisma:
+        return "flowchart TD\n    A[No data yet]"
+
+    # Identification block — one node per database
+    db_lines = []
+    db_total = 0
+    for i, (db, n) in enumerate(sorted(prisma["by_db"].items(), key=lambda x: -x[1])):
+        db_lines.append(f'    DB{i}["{db}<br/>n = {n:,}"]:::ident')
+        db_total += n
+
+    db_to_dedup = "\n".join([f"    DB{i} --> Dedup" for i in range(len(prisma["by_db"]))])
+
+    # Exclusion reason node — list reasons with counts
+    exclusion_lines = []
+    if prisma["exclusion_reasons"]:
+        sorted_reasons = sorted(prisma["exclusion_reasons"].items(), key=lambda x: -x[1])
+        for reason, count in sorted_reasons[:6]:  # top 6 to keep diagram readable
+            # Mermaid node text — escape pipes and quotes
+            safe_reason = reason.replace("|", "/").replace('"', "'")
+            exclusion_lines.append(f"• {safe_reason}: n = {count}")
+        if len(sorted_reasons) > 6:
+            other = sum(c for _, c in sorted_reasons[6:])
+            exclusion_lines.append(f"• Other: n = {other}")
+    exclusion_text = "<br/>".join(exclusion_lines) if exclusion_lines else "(reasons not categorised)"
+
+    # Build diagram
+    chart = f"""flowchart TD
+    subgraph IDENT [" Identification "]
+{chr(10).join(db_lines)}
+    end
+
+    Dedup["Records after duplicates removed<br/>n = {prisma['n_after_dedup']:,}"]:::stage
+
+    Screened["Records screened<br/>n = {prisma['n_screened']:,}"]:::stage
+
+    Excluded["Records excluded at screening<br/>n = {prisma['n_excluded_screening']:,}<br/><br/>Reasons:<br/>{exclusion_text}"]:::excluded
+
+    Eligible["Records assessed for eligibility<br/>n = {prisma['n_included_screening'] + prisma['n_maybe']:,}"]:::stage
+
+    Uncertain["Records uncertain / Maybe<br/>n = {prisma['n_maybe']:,}<br/>(deferred for full-text review)"]:::excluded
+
+    Included["Studies included in synthesis<br/>n = {prisma['n_corpus']:,}"]:::included
+
+{db_to_dedup}
+    Dedup --> Screened
+    Screened --> Excluded
+    Screened --> Eligible
+    Eligible --> Uncertain
+    Eligible --> Included
+
+    classDef ident fill:#E6F1FB,stroke:#185FA5,color:#0C447C
+    classDef stage fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+    classDef excluded fill:#FAECE7,stroke:#993C1D,color:#712B13
+    classDef included fill:#E1F5EE,stroke:#0F6E56,color:#085041
+"""
+    return chart
+
+
 def build_mermaid_flowchart(stats, config):
-    """Build a Mermaid flowchart linking theoretical anchor → evidence → implications."""
+    """Legacy conceptual flowchart — kept for backward compatibility.
+    The synthesis tab now uses build_prisma_flowchart instead."""
     topic = config["research_topic"][:60]
     top_tiers = sorted(
         [(t, c) for t, c in stats["tier_counts"].items() if c > 0],
@@ -513,33 +801,23 @@ def build_mermaid_flowchart(stats, config):
     )[:5]
     tier_nodes = "\n".join([f'    T{i}["{t} (n={c})"]' for i, (t, c) in enumerate(top_tiers)])
     tier_links = "\n".join([f"    Anchor --> T{i}" for i in range(len(top_tiers))])
-    # Implications based on KP ceiling
     has_l3 = stats["kp_counts"].get("L3 Behaviour", 0) > 0
     has_l4 = stats["kp_counts"].get("L4 Results", 0) > 0
     if has_l4:
-        ceiling = "L4 Results reached<br/>(strongest policy claims possible)"
+        ceiling = "L4 Results reached"
     elif has_l3:
-        ceiling = "L3 Behaviour reached<br/>(practice-level claims defensible)"
+        ceiling = "L3 Behaviour reached"
     else:
-        ceiling = "L1/L2 only<br/>(knowledge-level claims only)"
-
+        ceiling = "L1/L2 only"
     tier_to_imp = "\n".join([f"    T{i} --> Ceiling" for i in range(len(top_tiers))])
-
     return f"""flowchart TD
     Anchor["Theoretical anchor:<br/>{topic}"]
 {tier_nodes}
     Ceiling["Evidence ceiling:<br/>{ceiling}"]
-    Policy["Policy implications<br/>(see Section 6)"]
+    Policy["Policy implications"]
 {tier_links}
 {tier_to_imp}
-    Ceiling --> Policy
-    classDef anchor fill:#E6F1FB,stroke:#0C447C,color:#0C447C
-    classDef tier fill:#E1F5EE,stroke:#085041,color:#085041
-    classDef ceiling fill:#FAEEDA,stroke:#633806,color:#633806
-    classDef policy fill:#EEEDFE,stroke:#3C3489,color:#3C3489
-    class Anchor anchor
-    class Ceiling ceiling
-    class Policy policy"""
+    Ceiling --> Policy"""
 
 
 def render_mermaid(diagram_code, height=420):
@@ -596,12 +874,245 @@ Study design distribution (from extractions):
 """
 
     user_msg = stats_summary + "\n\nCORPUS LISTING:\n" + listing
-    text, err = call_claude(build_synth_system_prompt(), user_msg, max_tokens=4000)
+    text, err = call_claude(build_synth_system_prompt(), user_msg, max_tokens=6000)
 
     if err:
         return None, err
 
     return {"narrative": text, "stats": stats}, None
+
+
+# ─────────────────────────────────────────────────────────────────
+# WORD DOCUMENT EXPORT
+# ─────────────────────────────────────────────────────────────────
+
+def build_word_document(corpus, stats, narrative, prisma, config):
+    """Build a .docx document with full synthesis content.
+    Returns BytesIO object suitable for Streamlit download_button.
+    """
+    from docx import Document
+    from docx.shared import Pt, Cm, RGBColor
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_ALIGN_VERTICAL
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    from io import BytesIO
+
+    doc = Document()
+
+    # ─── Set default font ───
+    style = doc.styles['Normal']
+    style.font.name = 'Calibri'
+    style.font.size = Pt(11)
+
+    # Margins
+    for section in doc.sections:
+        section.top_margin = Cm(2.0)
+        section.bottom_margin = Cm(2.0)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+
+    # ─── Title ───
+    title = doc.add_heading(f"Synthesis: {config['research_topic']}", level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    meta = doc.add_paragraph()
+    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    meta_run = meta.add_run(f"Generated {datetime.now().strftime('%Y-%m-%d %H:%M')}  ·  n = {stats['n']} studies  ·  Year range {stats['year_range']}")
+    meta_run.italic = True
+    meta_run.font.size = Pt(10)
+    meta_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+
+    doc.add_paragraph()  # spacer
+
+    # ─── PRISMA-ScR Numbers ───
+    if prisma:
+        doc.add_heading("PRISMA-ScR Flow Summary", level=1)
+        p = doc.add_paragraph()
+        p.add_run("Records identified across databases: ").bold = True
+        p.add_run(", ".join([f"{db} (n = {n:,})" for db, n in sorted(prisma['by_db'].items(), key=lambda x: -x[1])]))
+
+        p = doc.add_paragraph()
+        p.add_run("Records after duplicates removed: ").bold = True
+        p.add_run(f"n = {prisma['n_after_dedup']:,}")
+
+        p = doc.add_paragraph()
+        p.add_run("Records screened: ").bold = True
+        p.add_run(f"n = {prisma['n_screened']:,}")
+
+        p = doc.add_paragraph()
+        p.add_run("Records excluded at screening: ").bold = True
+        p.add_run(f"n = {prisma['n_excluded_screening']:,}")
+
+        if prisma['exclusion_reasons']:
+            doc.add_paragraph("Exclusion reasons:", style='Intense Quote')
+            for reason, count in sorted(prisma['exclusion_reasons'].items(), key=lambda x: -x[1]):
+                bullet = doc.add_paragraph(style='List Bullet')
+                bullet.add_run(f"{reason}: n = {count}")
+
+        p = doc.add_paragraph()
+        p.add_run("Records uncertain (Maybe / deferred): ").bold = True
+        p.add_run(f"n = {prisma['n_maybe']:,}")
+
+        p = doc.add_paragraph()
+        p.add_run("Studies included in synthesis: ").bold = True
+        run = p.add_run(f"n = {prisma['n_corpus']:,}")
+        run.bold = True
+        run.font.color.rgb = RGBColor(0x0F, 0x6E, 0x56)
+
+        doc.add_paragraph()
+
+    # ─── Overview Table (Table 1) ───
+    doc.add_heading("Table 1. Overview of Included Studies", level=1)
+    overview_df = build_overview_table_df(corpus, config)
+    if overview_df is not None and not overview_df.empty:
+        # Use a compact column subset for Word to avoid overflow
+        word_cols = ["#", "Tier", "Study", "Country/Setting", "Design (Sample)", "AI Tool", "Educational Outcome", "Key Finding", "Kirkpatrick"]
+        cols = [c for c in word_cols if c in overview_df.columns]
+        table = doc.add_table(rows=1, cols=len(cols))
+        table.style = 'Light Grid Accent 1'
+        table.autofit = True
+
+        # Header row
+        hdr_cells = table.rows[0].cells
+        for i, col in enumerate(cols):
+            cell = hdr_cells[i]
+            cell.text = ""
+            run = cell.paragraphs[0].add_run(col)
+            run.bold = True
+            run.font.size = Pt(9)
+
+        # Body rows
+        for _, row in overview_df.iterrows():
+            cells = table.add_row().cells
+            for i, col in enumerate(cols):
+                val = str(row[col]) if pd.notna(row[col]) else "—"
+                cells[i].text = ""
+                run = cells[i].paragraphs[0].add_run(val)
+                run.font.size = Pt(8)
+
+        # Tighten column widths approximately
+        widths_cm = {
+            "#": 0.6, "Tier": 1.8, "Study": 2.2, "Country/Setting": 1.8,
+            "Design (Sample)": 2.5, "AI Tool": 1.8, "Educational Outcome": 2.5,
+            "Key Finding": 3.5, "Kirkpatrick": 1.4,
+        }
+        for i, col in enumerate(cols):
+            w = widths_cm.get(col, 2.0)
+            for cell in table.columns[i].cells:
+                cell.width = Cm(w)
+
+    doc.add_page_break()
+
+    # ─── Statistical Tables Section ───
+    doc.add_heading("Statistical Tables", level=1)
+
+    # Tier distribution table
+    doc.add_heading("Table 2. Tier Distribution", level=2)
+    tier_table = doc.add_table(rows=1, cols=3)
+    tier_table.style = 'Light Grid Accent 1'
+    hdr = tier_table.rows[0].cells
+    hdr[0].text = "Tier"
+    hdr[1].text = "n"
+    hdr[2].text = "% of corpus"
+    for cell in hdr:
+        for run in cell.paragraphs[0].runs:
+            run.bold = True
+    for tier, count in stats["tier_counts"].items():
+        if count == 0:
+            continue
+        pct = round(100 * count / stats["n"], 1) if stats["n"] else 0
+        row = tier_table.add_row().cells
+        row[0].text = tier
+        row[1].text = str(count)
+        row[2].text = f"{pct}%"
+
+    doc.add_paragraph()
+
+    # Kirkpatrick distribution
+    doc.add_heading("Table 3. Kirkpatrick Level Distribution", level=2)
+    kp_table = doc.add_table(rows=1, cols=3)
+    kp_table.style = 'Light Grid Accent 1'
+    hdr = kp_table.rows[0].cells
+    hdr[0].text = "Kirkpatrick level"
+    hdr[1].text = "n"
+    hdr[2].text = "% of corpus"
+    for cell in hdr:
+        for run in cell.paragraphs[0].runs:
+            run.bold = True
+    for kp, count in stats["kp_counts"].items():
+        if count == 0:
+            continue
+        pct = round(100 * count / stats["n"], 1) if stats["n"] else 0
+        row = kp_table.add_row().cells
+        row[0].text = kp
+        row[1].text = str(count)
+        row[2].text = f"{pct}%"
+
+    doc.add_paragraph()
+
+    # Geographic distribution if available
+    if stats.get("geo_counts"):
+        doc.add_heading("Table 4. Geographic Distribution", level=2)
+        geo_table = doc.add_table(rows=1, cols=2)
+        geo_table.style = 'Light Grid Accent 1'
+        hdr = geo_table.rows[0].cells
+        hdr[0].text = "Country / setting"
+        hdr[1].text = "n"
+        for cell in hdr:
+            for run in cell.paragraphs[0].runs:
+                run.bold = True
+        for country, count in sorted(stats["geo_counts"].items(), key=lambda x: -x[1])[:15]:
+            row = geo_table.add_row().cells
+            row[0].text = country
+            row[1].text = str(count)
+        doc.add_paragraph()
+
+    doc.add_page_break()
+
+    # ─── Narrative Sections ───
+    sections = [s.strip() for s in narrative.split("===SECTION===")]
+    while len(sections) < 9:
+        sections.append("(Section narrative not generated.)")
+
+    section_titles = [
+        ("Results", None),
+        (None, "1. Corpus Overview"),
+        (None, "2. Tier Distribution and Evidence Weight"),
+        (None, "3. Kirkpatrick Outcome Ceiling"),
+        (None, "4. Geographic and Contextual Variation"),
+        (None, "5. Cross-Tier Patterns"),
+        ("Discussion", None),
+        (None, "6. Comparison with Available Literature"),
+        (None, "7. Integration Across Tiers"),
+        (None, "8. Argument and Implications"),
+        ("Conclusion", None),
+        (None, "9. Conclusion"),
+    ]
+
+    section_idx = 0
+    for parent, sub in section_titles:
+        if parent:
+            doc.add_heading(parent, level=1)
+        if sub:
+            doc.add_heading(sub, level=2)
+            if section_idx < len(sections):
+                # Split narrative into paragraphs
+                content = sections[section_idx]
+                for para in content.split("\n\n"):
+                    para = para.strip()
+                    if para:
+                        p = doc.add_paragraph(para)
+                        p.paragraph_format.space_after = Pt(8)
+                        for run in p.runs:
+                            run.font.size = Pt(11)
+                section_idx += 1
+
+    # Save to BytesIO
+    bio = BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio
 
 
 def call_claude(system_prompt, user_message, max_tokens=1000):
@@ -1122,7 +1633,7 @@ with tab_synth:
         with c1:
             if st.button("✨ Generate structured synthesis", type="primary", disabled=not client):
                 if client:
-                    with st.spinner("Computing statistics and generating narrative..."):
+                    with st.spinner("Computing statistics and generating narrative (this may take 60–90s)..."):
                         result, err = synthesise_corpus(st.session_state.corpus, st.session_state.config)
                         if result:
                             st.session_state.synth_data = result
@@ -1140,12 +1651,45 @@ with tab_synth:
                     "2. Tier Distribution and Evidence Weight",
                     "3. Kirkpatrick Outcome Ceiling",
                     "4. Geographic and Contextual Variation",
-                    "5. Key Research Gaps",
-                    "6. Policy Implications",
-                    "7. Conclusion",
+                    "5. Cross-Tier Patterns",
+                    "6. Comparison with Available Literature",
+                    "7. Integration Across Tiers",
+                    "8. Argument and Implications",
+                    "9. Conclusion",
                 ]
+
+                # Compute PRISMA numbers for the markdown export
+                prisma = compute_prisma_numbers(st.session_state.results, st.session_state.corpus)
+                prisma_md = ""
+                if prisma:
+                    prisma_md = (
+                        "## PRISMA-ScR Flow\n\n"
+                        f"- Records identified across databases: "
+                        + ", ".join([f"{db} n={n:,}" for db, n in sorted(prisma['by_db'].items(), key=lambda x: -x[1])])
+                        + f"\n- Records after duplicates removed: n = {prisma['n_after_dedup']:,}\n"
+                        f"- Records screened: n = {prisma['n_screened']:,}\n"
+                        f"- Records excluded at screening: n = {prisma['n_excluded_screening']:,}\n"
+                    )
+                    if prisma['exclusion_reasons']:
+                        prisma_md += "  - Reasons:\n"
+                        for reason, count in sorted(prisma['exclusion_reasons'].items(), key=lambda x: -x[1]):
+                            prisma_md += f"    - {reason}: n = {count}\n"
+                    prisma_md += (
+                        f"- Records uncertain (Maybe / deferred): n = {prisma['n_maybe']:,}\n"
+                        f"- Studies included in synthesis: n = {prisma['n_corpus']:,}\n\n"
+                    )
+
                 md_parts = [f"# Synthesis: {st.session_state.config['research_topic']}\n"]
                 md_parts.append(f"_Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} · n={stats['n']} studies_\n\n")
+                if prisma_md:
+                    md_parts.append(prisma_md)
+
+                # Overview table (Table 1)
+                overview_md = build_overview_table_md(st.session_state.corpus, st.session_state.config)
+                if overview_md:
+                    md_parts.append("## Table 1. Overview of Included Studies\n")
+                    md_parts.append(overview_md + "\n\n")
+
                 for i, title in enumerate(section_titles):
                     md_parts.append(f"## {title}\n")
                     # Add table for relevant sections
@@ -1171,13 +1715,98 @@ with tab_synth:
                     use_container_width=True,
                 )
 
+                # ─── Word document download ───
+                try:
+                    word_bio = build_word_document(
+                        st.session_state.corpus,
+                        stats,
+                        narrative,
+                        prisma,
+                        st.session_state.config,
+                    )
+                    st.download_button(
+                        "📄 Download (.docx)",
+                        data=word_bio,
+                        file_name=f"synthesis_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        use_container_width=True,
+                    )
+                except ImportError:
+                    st.caption("⚠️ Install `python-docx` to enable Word export.")
+                except Exception as e:
+                    st.caption(f"⚠️ Word export failed: {e}")
+
         # ─── Render structured synthesis output ────────────────────
         if st.session_state.synth_data:
             stats = st.session_state.synth_data["stats"]
             narrative = st.session_state.synth_data["narrative"]
             sections = [s.strip() for s in narrative.split("===SECTION===")]
 
+            # Pad sections list so missing ones don't crash
+            while len(sections) < 9:
+                sections.append("(Section narrative not generated — try regenerating.)")
+
             st.divider()
+
+            # ───────────── PRISMA-ScR FLOWCHART (at the top) ─────────────
+            st.markdown("### PRISMA-ScR Flow Diagram")
+            st.caption("Records identified, screened, excluded with reasons, and included in the synthesis.")
+            prisma = compute_prisma_numbers(st.session_state.results, st.session_state.corpus)
+            if prisma:
+                prisma_code = build_prisma_flowchart(prisma)
+                render_mermaid(prisma_code, height=720)
+                with st.expander("PRISMA flow diagram source (Mermaid)", expanded=False):
+                    st.code(prisma_code, language="mermaid")
+                with st.expander("PRISMA numbers in tabular form", expanded=False):
+                    rows = ["| Stage | n |", "|---|---|"]
+                    for db, n in sorted(prisma["by_db"].items(), key=lambda x: -x[1]):
+                        rows.append(f"| Records identified — {db} | {n:,} |")
+                    rows.append(f"| Records after duplicates removed | {prisma['n_after_dedup']:,} |")
+                    rows.append(f"| Records screened | {prisma['n_screened']:,} |")
+                    rows.append(f"| Records excluded at screening | {prisma['n_excluded_screening']:,} |")
+                    for reason, count in sorted(prisma["exclusion_reasons"].items(), key=lambda x: -x[1]):
+                        rows.append(f"|  &nbsp;&nbsp;– {reason} | {count} |")
+                    rows.append(f"| Records uncertain (Maybe) | {prisma['n_maybe']:,} |")
+                    rows.append(f"| Studies included | {prisma['n_corpus']:,} |")
+                    st.markdown("\n".join(rows))
+            else:
+                st.info("Run a search and screen some results to populate the PRISMA flowchart.")
+
+            st.divider()
+
+            # ──────────────────── TABLE 1: OVERVIEW OF INCLUDED STUDIES ────────────────────
+            st.markdown("### Table 1. Overview of Included Studies")
+            st.caption(f"All {stats['n']} included studies grouped by tier, ordered by year ascending. Empty cells indicate the field was not extracted or not reported.")
+            overview_df = build_overview_table_df(st.session_state.corpus, st.session_state.config)
+            if overview_df is not None and not overview_df.empty:
+                st.dataframe(
+                    overview_df,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "#": st.column_config.NumberColumn(width="small"),
+                        "Tier": st.column_config.TextColumn(width="medium"),
+                        "Study": st.column_config.TextColumn(width="small"),
+                        "Country/Setting": st.column_config.TextColumn(width="small"),
+                        "Design (Sample)": st.column_config.TextColumn(width="medium"),
+                        "AI Tool": st.column_config.TextColumn(width="small"),
+                        "Educational Outcome": st.column_config.TextColumn(width="medium"),
+                        "Key Finding": st.column_config.TextColumn(width="large"),
+                        "Limitation": st.column_config.TextColumn(width="medium"),
+                        "Kirkpatrick": st.column_config.TextColumn(width="small"),
+                        "PMID/DOI": st.column_config.TextColumn(width="small"),
+                    },
+                )
+                n_extracted_now = sum(1 for c in st.session_state.corpus if c.get("extraction"))
+                if n_extracted_now < stats["n"]:
+                    st.caption(f"⚠️ {stats['n'] - n_extracted_now} of {stats['n']} studies have not been AI-extracted. Run AI extraction in the Corpus tab to populate Country, Design, AI Tool, and Key Finding fields.")
+            else:
+                st.info("No corpus available to display.")
+
+            st.divider()
+
+            # ──────────────────── RESULTS SECTIONS ────────────────────
+            st.markdown("## Results")
 
             # Section 1: Corpus Overview
             st.markdown("### 1. Corpus Overview")
@@ -1188,24 +1817,21 @@ with tab_synth:
             ov_cols[3].metric("Tiers used", sum(1 for c in stats["tier_counts"].values() if c > 0))
             st.markdown("**Database sourcing**")
             st.markdown(build_db_table(stats))
-            if len(sections) > 0 and sections[0]:
-                st.markdown(sections[0])
+            st.markdown(sections[0])
 
             st.divider()
 
             # Section 2: Tier Distribution
             st.markdown("### 2. Tier Distribution and Evidence Weight")
             st.markdown(build_tier_table(stats, st.session_state.config))
-            if len(sections) > 1 and sections[1]:
-                st.markdown(sections[1])
+            st.markdown(sections[1])
 
             st.divider()
 
             # Section 3: Kirkpatrick Ceiling
             st.markdown("### 3. Kirkpatrick Outcome Ceiling")
             st.markdown(build_kp_table(stats))
-            if len(sections) > 2 and sections[2]:
-                st.markdown(sections[2])
+            st.markdown(sections[2])
 
             st.divider()
 
@@ -1215,38 +1841,38 @@ with tab_synth:
             if geo_t:
                 st.markdown(geo_t)
             else:
-                st.info("No geographic data available — run AI extraction on corpus studies for this section.")
-            if len(sections) > 3 and sections[3]:
-                st.markdown(sections[3])
+                st.info("No geographic data available — run AI extraction on corpus studies for richer geographic detail.")
+            st.markdown(sections[3])
 
             st.divider()
 
-            # Synthesis Flowchart
-            st.markdown("### Synthesis Flowchart")
-            st.caption("Visual map of the theoretical anchor, evidence tiers, and policy ceiling.")
-            mermaid_code = build_mermaid_flowchart(stats, st.session_state.config)
-            render_mermaid(mermaid_code, height=480)
-
-            with st.expander("Flowchart source (Mermaid)", expanded=False):
-                st.code(mermaid_code, language="mermaid")
+            # Section 5: Cross-Tier Patterns
+            st.markdown("### 5. Cross-Tier Patterns")
+            st.markdown(sections[4])
 
             st.divider()
 
-            # Section 5: Research Gaps
-            st.markdown("### 5. Key Research Gaps")
-            if len(sections) > 4 and sections[4]:
-                st.markdown(sections[4])
+            # ──────────────────── DISCUSSION SECTIONS ────────────────────
+            st.markdown("## Discussion")
+
+            # Section 6: Comparison with Available Literature
+            st.markdown("### 6. Comparison with Available Literature")
+            st.markdown(sections[5])
 
             st.divider()
 
-            # Section 6: Policy Implications
-            st.markdown("### 6. Policy Implications")
-            if len(sections) > 5 and sections[5]:
-                st.markdown(sections[5])
+            # Section 7: Integration Across Tiers
+            st.markdown("### 7. Integration Across Tiers")
+            st.markdown(sections[6])
 
             st.divider()
 
-            # Section 7: Conclusion
-            st.markdown("### 7. Conclusion")
-            if len(sections) > 6 and sections[6]:
-                st.markdown(sections[6])
+            # Section 8: Argument and Implications
+            st.markdown("### 8. Argument and Implications")
+            st.markdown(sections[7])
+
+            st.divider()
+
+            # Section 9: Conclusion
+            st.markdown("## Conclusion")
+            st.markdown(sections[8])
