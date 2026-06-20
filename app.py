@@ -110,6 +110,8 @@ def search_pubmed(query, date_from, date_to, max_results):
         ids = sd.get("esearchresult", {}).get("idlist", [])
         if not ids:
             return [], 0
+
+        # Get summaries (titles, authors, journal, year)
         f = requests.get(
             f"{base}/esummary.fcgi",
             params={"db": "pubmed", "id": ",".join(ids), "retmode": "json"},
@@ -117,6 +119,28 @@ def search_pubmed(query, date_from, date_to, max_results):
         )
         f.raise_for_status()
         fd = f.json()
+
+        # Get abstracts via efetch (separate call - needed for accurate AI screening)
+        abstracts = {}
+        try:
+            ab = requests.get(
+                f"{base}/efetch.fcgi",
+                params={"db": "pubmed", "id": ",".join(ids), "rettype": "abstract", "retmode": "xml"},
+                timeout=20,
+            )
+            ab.raise_for_status()
+            import re
+            xml = ab.text
+            # Simple regex parse — split by article and extract PMID + abstract
+            articles = re.split(r'<PubmedArticle>', xml)
+            for art in articles[1:]:
+                pmid_m = re.search(r'<PMID[^>]*>(\d+)</PMID>', art)
+                abs_m = re.findall(r'<AbstractText[^>]*>(.*?)</AbstractText>', art, re.DOTALL)
+                if pmid_m:
+                    abstracts[pmid_m.group(1)] = " ".join([re.sub(r'<[^>]+>', '', a).strip() for a in abs_m])[:2000]
+        except Exception:
+            pass  # Abstracts are nice-to-have, not critical
+
         items = []
         for pmid in ids:
             d = fd.get("result", {}).get(pmid)
@@ -135,7 +159,7 @@ def search_pubmed(query, date_from, date_to, max_results):
                 "year": (d.get("pubdate") or "").split(" ")[0],
                 "db": "PubMed",
                 "url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/",
-                "abstract": "",
+                "abstract": abstracts.get(pmid, ""),
                 "decision": "Pending",
                 "tier": "",
                 "kp": "N/A",
@@ -151,12 +175,12 @@ def search_pubmed(query, date_from, date_to, max_results):
 
 def search_epmc(query, date_from, date_to, max_results):
     try:
+        # Europe PMC supports PubMed-style queries but works best with PUB_YEAR filter
+        epmc_query = f"({query}) AND (PUB_YEAR:[{date_from} TO {date_to}])"
         r = requests.get(
             "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
             params={
-                "query": query,
-                "fromYear": date_from,
-                "toYear": date_to,
+                "query": epmc_query,
                 "pageSize": max_results,
                 "format": "json",
                 "resultType": "core",
@@ -197,13 +221,16 @@ def search_epmc(query, date_from, date_to, max_results):
 
 def search_openalex(query, date_from, date_to, max_results):
     try:
-        filter_str = f"default.search:{quote(query)},from_publication_date:{date_from}-01-01,to_publication_date:{date_to}-12-31"
+        # OpenAlex works better with the 'search' parameter (full-text) than 'default.search' filter
+        # Strip Boolean operators that OpenAlex doesn't handle well
+        clean_query = query.replace(' AND ', ' ').replace(' OR ', ' ').replace('(', '').replace(')', '').replace('"', '')
         r = requests.get(
-            f"https://api.openalex.org/works",
+            "https://api.openalex.org/works",
             params={
-                "filter": filter_str,
+                "search": clean_query,
+                "filter": f"from_publication_date:{date_from}-01-01,to_publication_date:{date_to}-12-31",
                 "per-page": max_results,
-                "select": "id,title,authorships,publication_year,primary_location,doi",
+                "select": "id,title,authorships,publication_year,primary_location,doi,abstract_inverted_index",
                 "mailto": "research.tool@example.com",
             },
             timeout=20,
@@ -218,6 +245,18 @@ def search_openalex(query, date_from, date_to, max_results):
             if len(authors_list) > 3:
                 authors += " et al."
             doi = w.get("doi", "")
+
+            # Reconstruct abstract from OpenAlex inverted index
+            abstract = ""
+            inv = w.get("abstract_inverted_index")
+            if inv:
+                word_positions = []
+                for word, positions in inv.items():
+                    for pos in positions:
+                        word_positions.append((pos, word))
+                word_positions.sort()
+                abstract = " ".join([w for _, w in word_positions])[:2000]
+
             items.append({
                 "id": f"oa_{wid}",
                 "pmid": doi.replace("https://doi.org/", "") if doi else wid,
@@ -227,7 +266,7 @@ def search_openalex(query, date_from, date_to, max_results):
                 "year": str(w.get("publication_year", "")),
                 "db": "OpenAlex",
                 "url": doi if doi else f"https://openalex.org/{wid}",
-                "abstract": "",
+                "abstract": abstract,
                 "decision": "Pending",
                 "tier": "",
                 "kp": "N/A",
@@ -523,7 +562,7 @@ with tab_search:
     with c2:
         date_to = st.number_input("To year", min_value=1990, max_value=2030, value=2026)
     with c3:
-        max_per_db = st.slider("Max per DB", 5, 100, 20, step=5)
+        max_per_db = st.slider("Max per DB", 10, 200, 50, step=10, help="How many results to fetch from EACH database. 50 per DB = up to 150 total.")
     with c4:
         st.write("")
         st.write("")
