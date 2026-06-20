@@ -65,11 +65,11 @@ L2 – Learning: knowledge/skill acquisition (objective or self-reported)
 L3 – Behaviour: observed change in practice
 L4 – Results: patient or institutional outcomes (Yardley & Dornan 2012)""",
     "search_presets": [
-        ("AI + Dental + Accreditation", '("artificial intelligence" OR "machine learning" OR "large language model" OR "ChatGPT") AND ("dental education" OR "dental curriculum") AND ("accreditation" OR "quality assurance")'),
-        ("Educator readiness", '("artificial intelligence") AND ("dental faculty" OR "dental educator") AND ("readiness" OR "attitude" OR "perception")'),
-        ("AI curriculum frameworks", '("artificial intelligence") AND ("dental education") AND ("curriculum" OR "competency" OR "framework")'),
-        ("GDC / UK standards", '("artificial intelligence") AND ("dental education") AND ("General Dental Council" OR "GDC" OR "United Kingdom")'),
-        ("NCAAA / Saudi Arabia", '("dental education") AND ("Saudi Arabia" OR "NCAAA") AND ("quality" OR "accreditation")'),
+        ("Broad: AI + Dental Education", '("artificial intelligence" OR "machine learning" OR "deep learning" OR "ChatGPT" OR "large language model" OR "generative AI") AND ("dental student" OR "dental students" OR "dental education" OR "dental curriculum" OR "dental faculty")'),
+        ("Narrow: + Accreditation/QA", '("artificial intelligence" OR "machine learning" OR "ChatGPT" OR "large language model") AND ("dental education" OR "dental curriculum") AND ("accreditation" OR "quality assurance" OR "competency framework")'),
+        ("Educator readiness", '("artificial intelligence" OR "ChatGPT") AND ("dental faculty" OR "dental educator" OR "dental teacher") AND ("readiness" OR "attitude" OR "perception" OR "competence")'),
+        ("Curriculum frameworks", '("artificial intelligence" OR "ChatGPT") AND ("dental education" OR "dental curriculum") AND ("curriculum" OR "competency" OR "framework" OR "learning outcome")'),
+        ("GDC / UK standards", '("artificial intelligence" OR "ChatGPT") AND ("dental education") AND ("General Dental Council" OR "GDC" OR "United Kingdom" OR "UK")'),
     ],
 }
 
@@ -101,6 +101,110 @@ init_state()
 # ─────────────────────────────────────────────────────────────────
 # DATABASE SEARCH FUNCTIONS
 # ─────────────────────────────────────────────────────────────────
+
+def build_query_prompt():
+    c = st.session_state.config
+    return f"""You are a search-strategy expert helping construct a PubMed query for a scoping review on: {c['research_topic']}.
+
+Inclusion criteria:
+{c['inclusion_criteria']}
+
+Exclusion criteria (these will be applied later during AI screening, NOT in the search):
+{c['exclusion_criteria']}
+
+TASK
+Construct an OPTIMAL PubMed search query that maximises sensitivity (recall) for the topic. Apply these principles:
+
+1. The search should be BROAD — it captures everything potentially relevant. Refinement happens later during screening, NOT in the query.
+2. Build two-to-three CONCEPTUAL clusters joined by AND. Each cluster contains synonyms joined by OR.
+   - Cluster 1: the core technology/concept (e.g., "artificial intelligence" OR "machine learning" OR "ChatGPT" OR ...)
+   - Cluster 2: the population/context (e.g., "dental education" OR "dental student" OR "dental curriculum" OR ...)
+   - Optional Cluster 3: only add if the topic is genuinely narrow (e.g., a specific outcome, region, or methodology that ALL eligible papers must mention in title/abstract)
+3. DO NOT add restrictive clauses like "AND (accreditation OR quality)" unless the topic explicitly demands it — these clauses kill sensitivity and the concept is better detected during AI screening of abstracts.
+4. Use quoted phrases for multi-word terms.
+5. Use [Title/Abstract] or [Mesh] tags only if specifically needed; default to free-text search.
+6. Estimate the likely yield (broad: 200-1000+, moderate: 50-200, narrow: <50).
+
+Respond ONLY as valid JSON, no markdown:
+{{
+  "query": "the PubMed search string",
+  "rationale": "1-2 sentence explanation of the cluster structure",
+  "estimated_yield": "broad|moderate|narrow",
+  "estimated_count": "rough integer estimate or range"
+}}"""
+
+
+def ai_generate_query():
+    """Use Claude to generate an optimal PubMed query from the configured topic + criteria."""
+    text, err = call_claude(build_query_prompt(), "Generate the optimal query for this scoping review.", max_tokens=1000)
+    if err:
+        return None, err
+    try:
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(cleaned)
+        return data, None
+    except Exception as e:
+        return None, f"Could not parse query JSON: {e}\n\nRaw: {text[:500]}"
+
+
+def pubmed_count_only(query, date_from, date_to):
+    """Quickly return only the total count from PubMed without fetching items."""
+    base = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    try:
+        s = requests.get(
+            f"{base}/esearch.fcgi",
+            params={
+                "db": "pubmed",
+                "term": query,
+                "mindate": date_from,
+                "maxdate": date_to,
+                "retmax": 0,
+                "retmode": "json",
+            },
+            timeout=15,
+        )
+        s.raise_for_status()
+        sd = s.json()
+        return int(sd.get("esearchresult", {}).get("count", 0)), None
+    except Exception as e:
+        return 0, str(e)
+
+
+def epmc_count_only(query, date_from, date_to):
+    """Quickly return only the total count from Europe PMC."""
+    try:
+        full_query = f"({query}) AND (PUB_YEAR:[{date_from} TO {date_to}])"
+        r = requests.get(
+            "https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+            params={"query": full_query, "format": "json", "pageSize": 1, "resultType": "lite"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        d = r.json()
+        return int(d.get("hitCount", 0)), None
+    except Exception as e:
+        return 0, str(e)
+
+
+def openalex_count_only(query, date_from, date_to):
+    """Quickly return only the total count from OpenAlex."""
+    try:
+        r = requests.get(
+            "https://api.openalex.org/works",
+            params={
+                "search": query,
+                "filter": f"from_publication_date:{date_from}-01-01,to_publication_date:{date_to}-12-31",
+                "per-page": 1,
+                "mailto": "research.tool@example.com",
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        d = r.json()
+        return int(d.get("meta", {}).get("count", 0)), None
+    except Exception as e:
+        return 0, str(e)
+
 
 def search_pubmed(query, date_from, date_to, max_results):
     """PubMed search with pagination support — fetches up to max_results IDs,
@@ -1629,6 +1733,32 @@ tab_search, tab_screen, tab_corpus, tab_synth, tab_trends = st.tabs(["🔍 Searc
 with tab_search:
     st.subheader("Database search")
 
+    # ─── AI query builder + presets ───
+    builder_cols = st.columns([3, 1, 1])
+    with builder_cols[0]:
+        st.caption("🤖 Let AI generate an optimal query from your topic + inclusion criteria, OR pick a preset below, OR write your own.")
+    with builder_cols[1]:
+        if st.button("🤖 Build query with AI", type="secondary", use_container_width=True, disabled=not client):
+            if client:
+                with st.spinner("Generating optimal query..."):
+                    q_data, err = ai_generate_query()
+                    if q_data and q_data.get("query"):
+                        st.session_state.pending_query = q_data["query"]
+                        st.session_state.last_query_meta = q_data
+                        st.rerun()
+                    else:
+                        st.error(f"Query builder error: {err}")
+    with builder_cols[2]:
+        if "last_query_meta" in st.session_state and st.session_state.get("last_query_meta"):
+            meta = st.session_state.last_query_meta
+            st.caption(f"_{meta.get('estimated_yield','?')} ({meta.get('estimated_count','?')})_")
+
+    if "last_query_meta" in st.session_state and st.session_state.get("last_query_meta"):
+        with st.expander("AI query rationale", expanded=False):
+            meta = st.session_state.last_query_meta
+            st.markdown(f"**Rationale:** {meta.get('rationale','—')}")
+            st.markdown(f"**Estimated yield:** {meta.get('estimated_yield','?')} (~{meta.get('estimated_count','?')} papers)")
+
     preset_cols = st.columns(min(5, len(st.session_state.config["search_presets"])))
     for i, (label, query) in enumerate(st.session_state.config["search_presets"]):
         with preset_cols[i % len(preset_cols)]:
@@ -1657,6 +1787,44 @@ with tab_search:
         st.write("")
         st.write("")
         search_btn = st.button("🔍 Search all databases", type="primary", use_container_width=True)
+
+    # ─── Preview count (cheap, fast diagnostic) ───
+    preview_btn = st.button(
+        "👁️ Preview total counts (fast, no abstracts)",
+        type="secondary",
+        help="Quickly check how many papers your query matches in each database before doing a full fetch. Useful for tuning the query when yields look low.",
+    )
+    if preview_btn and query.strip():
+        with st.spinner("Checking counts across databases..."):
+            counts = {}
+            for db in ["PubMed", "Europe PMC", "OpenAlex"]:
+                if db == "PubMed":
+                    n, e = pubmed_count_only(query, date_from, date_to)
+                elif db == "Europe PMC":
+                    n, e = epmc_count_only(query, date_from, date_to)
+                else:
+                    n, e = openalex_count_only(query, date_from, date_to)
+                counts[db] = (n, e)
+
+        # Render the count summary prominently
+        st.markdown("**Preview counts** (these are the TOTAL matches before any retrieval cap):")
+        pc1, pc2, pc3 = st.columns(3)
+        for col, (db, (n, e)) in zip([pc1, pc2, pc3], counts.items()):
+            with col:
+                if e:
+                    st.metric(db, "error")
+                    st.caption(f"⚠️ {e[:100]}")
+                else:
+                    st.metric(db, f"{n:,}")
+                    if n < 30:
+                        st.caption("🔴 Very low — query may be too narrow")
+                    elif n < 100:
+                        st.caption("🟡 Modest — consider broadening")
+                    else:
+                        st.caption("🟢 Healthy yield")
+
+        if all(c[0] < 30 for c in counts.values() if not c[1]):
+            st.warning("All databases return very few matches. **Try:** removing the most restrictive AND clause, or use the '🤖 Build query with AI' button at the top to generate a broader query from your topic + criteria.")
 
     selected_dbs = st.multiselect(
         "Databases to search",
@@ -1703,7 +1871,31 @@ with tab_search:
 
     if st.session_state.search_status:
         st.success(st.session_state.search_status)
-        st.write(" · ".join(st.session_state.db_status))
+        # Render per-database stats with clearer diagnostic styling
+        ds_cols = st.columns(len(st.session_state.db_status) if st.session_state.db_status else 1)
+        for col, line in zip(ds_cols, st.session_state.db_status):
+            with col:
+                st.markdown(f"• {line}")
+        # If any DB shows "X of Y" where X < Y AND X equals the cap, suggest raising the cap
+        capped = []
+        for line in st.session_state.db_status:
+            # Try to parse "DB: N of M total"
+            import re
+            m = re.match(r"(\w[\w ]*): (\d[\d,]*) of (\d[\d,]*) total", line)
+            if m:
+                db_name = m.group(1)
+                retrieved = int(m.group(2).replace(",", ""))
+                total = int(m.group(3).replace(",", ""))
+                if total > retrieved and total > 50:
+                    capped.append((db_name, retrieved, total))
+        if capped:
+            msgs = []
+            for db, ret, tot in capped:
+                msgs.append(f"**{db}** retrieved {ret:,} of {tot:,} available")
+            st.warning(
+                "📊 " + " · ".join(msgs)
+                + f". Raise **Max per DB** above current value to capture more, or accept the cap if you only want the most recent/relevant. PubMed sorts by relevance by default."
+            )
 
     if st.session_state.results:
         inc = sum(1 for r in st.session_state.results if r["decision"] == "Include")
