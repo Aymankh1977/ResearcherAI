@@ -26,6 +26,13 @@ st.set_page_config(
 DEFAULT_CONFIG = {
     "research_topic": "Artificial Intelligence in Dental Education and Accreditation",
     "theoretical_anchor": "the accreditation dilemma — structural tension between formal accreditation requirements and dental schools' institutional capacity to implement them (DiMaggio & Powell isomorphism; Scott's three pillars — regulative, normative, cultural-cognitive; loose coupling; Meyer & Rowan myth and ceremony)",
+    "writing_style_sample": """In dental education, assessment of students is of critical value to improve their performance in clinical settings. The assessment of students' clinical performance includes various stages, where in certain cases, assessors encounter challenges in providing final grades. This study sheds a light on assessment practices in clinical settings and focuses on assessors' modulation of the whole cognitive process. The argument involves discussing critical thinking of assessors before, during, and after the event of assessment. Then, it analyzes a cognitive approach of assessment implied by assessors during students' performance. Further, it proposes a model with step-by-step approach in decision-making along with different factors, which may strongly influence final grades. Four main stages were identified for the purpose of analysis, such as pre-decision, driver, primary decision, and communication stages. Each stage was supported by literary data, along with evidences worth consideration.
+
+Briefly, the four stages explain the flow of information during the cognitive process with conjoint factors. For example, internal and external sources are the main factors to affect a pre-decision (non-task-specific) cognitive stage in clinical settings. The driver stage starts when the assessor is present to judge the performance of specific clinical tasks of assessment. The third stage is the primary decision stage, which begins when the assessor finds or sees (interpret) students' performance according to the defined frame of reference. The resulted primary decision predicts a range of options between 'being sure' and 'uncertainty'. Then, the refinement process of decision grade, the fourth stage, is the moderation of the decision, which is affected by another set of factors, such as legal consequences, community, and patient safety to direct the decision towards grading.
+
+Expertise is believed to be a primary internal factor, which influences clinical reasoning to update assessors' judgment capacity. Clinical reasoning consists of two types: content-dependent and context-dependent. However, in therapeutic and diagnostic reasoning, expertise generally differs among assessors. For example, in psychology, deliberate practice acts as a key to expert performance. It may further benefit clinical reasoning as that experts possess more stringent decisions than early career assessors. In the light of behavioral learning perspective theory, expertise is guided by disciplines' specific knowledge and skills, which in turn affect internal assessors' attitudes, emotions, intentions, and personalities.
+
+Interestingly, one external factor that is found to increase the stringency of assessors' decision is the increased number of candidates during time of assessment. This could be related to the feeling of fatigue or other factors, which may be further investigated in future studies. To conclude, it is now clear that the above-mentioned internal and external factors can influence the cognitive process during the pre-decision stage to initially predict assessors' appraisals of learners' performances.""",
     "inclusion_criteria": """1. Proposes or evaluates an AI competency/curriculum framework for the field
 2. Empirical study of practitioner or learner AI readiness with explicit curricular/policy recommendations (n ≥ 30)
 3. Educational intervention integrating AI into curriculum with institutional scope
@@ -79,6 +86,7 @@ def init_state():
         "db_status": {},
         "screening_id": None,
         "synth_text": "",
+        "synth_data": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -346,18 +354,254 @@ Respond ONLY as valid JSON, no markdown:
 
 def build_synth_system_prompt():
     c = st.session_state.config
-    return f"""You are a PhD-level synthesis analyst for a scoping review on: {c['research_topic']}.
+    style_section = ""
+    if c.get("writing_style_sample", "").strip():
+        style_section = f"""
+
+═══════════════════════════════════════════════
+WRITING STYLE — MIMIC THIS VOICE EXACTLY
+═══════════════════════════════════════════════
+The following passages illustrate the author's writing voice. Match this style precisely in every narrative section you produce: sentence rhythm, vocabulary, hedging patterns, paragraph openers, use of connective adverbs (Moreover, Therefore, However, Interestingly, Briefly, In fact, Consequently), academic third-person tone, and the characteristic move of defining a concept then giving an example.
+
+STYLE SAMPLE:
+\"\"\"
+{c['writing_style_sample']}
+\"\"\"
+
+Distinctive features to replicate:
+- Opens sentences with connective adverbs: "Moreover,", "Therefore,", "However,", "Interestingly,", "In fact,", "Briefly,", "Consequently,", "Nevertheless,"
+- Hedging language: "may," "tend to," "could be related to," "It has been reported that"
+- Scholarly third-person voice; no first person; no "we"
+- Defines a concept, then illustrates with "For example,"
+- Closes paragraphs with synthesis using "Therefore," or "To conclude," or "It is now clear that"
+- Medium-long sentences with multiple clauses linked by commas
+- Avoids markdown bold within narrative prose
+═══════════════════════════════════════════════
+"""
+    return f"""You are a PhD-level synthesis analyst writing in a specific author's voice for a scoping review on: {c['research_topic']}.
 
 Theoretical anchor: {c['theoretical_anchor']}
+{style_section}
+TASK
+You will receive (1) pre-computed statistical tables about a corpus, and (2) a list of included studies. Your job is to produce ONLY the NARRATIVE TEXT for each numbered section described below. Do NOT regenerate the tables — they are inserted programmatically. Do NOT add markdown headers (the section headings are inserted by the system). Each narrative section should be 100–200 words of flowing prose in the author's voice.
 
-Write a structured synthesis covering:
-1. Tier distribution and what it reveals about the evidential base
-2. Kirkpatrick level ceiling and what it means for policy
-3. Geographic spread and contextual variation
-4. Key research gaps
-5. What this corpus can and cannot defensibly support at policy level
+Produce narrative for SEVEN sections, separated by the literal marker `===SECTION===` on its own line:
 
-PhD voice, ~400-500 words, flowing prose without markdown headers."""
+1. CORPUS OVERVIEW — interpret what the corpus size, year range, database spread, and tier mix reveal about the maturity and shape of the evidence base.
+
+2. TIER DISTRIBUTION — interpret which tiers carry the most weight, which are under-represented, and what this implies for the strength of the evidence in answering the review question.
+
+3. KIRKPATRICK CEILING — interpret the highest outcome level reached across the intervention studies and what this means for policy claims that can or cannot be made.
+
+4. GEOGRAPHIC AND CONTEXTUAL VARIATION — discuss how the spread (or absence) of geographic variation affects generalisability and the application of the theoretical anchor.
+
+5. KEY RESEARCH GAPS — identify 3-4 specific gaps the corpus reveals, anchoring each gap in the theoretical framework.
+
+6. POLICY IMPLICATIONS — distinguish what the corpus can defensibly support at the level of accreditation/regulatory standards from what it cannot, and why.
+
+7. CONCLUSION — a closing paragraph synthesising the review's contribution in the author's voice, opening with "To conclude," or "It is now clear that".
+
+CRITICAL RULES
+- Output narrative ONLY. No markdown headers, no tables, no bullet lists.
+- Use the literal marker `===SECTION===` between sections.
+- Mimic the writing style sample precisely.
+- Reference specific tier names, Kirkpatrick levels, and statistics from the data provided.
+- Do not invent studies or findings beyond what is in the corpus list."""
+
+
+def compute_corpus_stats(corpus, config):
+    """Compute structured statistics from the corpus for tables."""
+    if not corpus:
+        return {}
+
+    n = len(corpus)
+    years = [int(c["year"]) for c in corpus if c.get("year", "").isdigit()]
+    year_range = f"{min(years)}–{max(years)}" if years else "—"
+
+    # Tier distribution
+    tier_counts = {}
+    for t in config["tiers"]:
+        tier_counts[t] = sum(1 for c in corpus if c.get("tier") == t)
+    untiered = sum(1 for c in corpus if not c.get("tier"))
+    if untiered:
+        tier_counts["(Untiered)"] = untiered
+
+    # Kirkpatrick distribution
+    kp_counts = {}
+    for k in config["kp_levels"]:
+        kp_counts[k] = sum(1 for c in corpus if c.get("kp") == k)
+
+    # Database distribution
+    db_counts = {}
+    for c in corpus:
+        db_counts[c["db"]] = db_counts.get(c["db"], 0) + 1
+
+    # Geographic distribution from extractions
+    geo_counts = {}
+    design_counts = {}
+    relevance_counts = {"direct": 0, "partial": 0, "indirect": 0}
+    for c in corpus:
+        e = c.get("extraction") or {}
+        country = (e.get("country") or "").strip().lstrip("?").strip()
+        if country:
+            geo_counts[country] = geo_counts.get(country, 0) + 1
+        design = (e.get("design") or "").strip().lstrip("?").strip()
+        if design:
+            design_counts[design] = design_counts.get(design, 0) + 1
+        rel = (e.get("relevance") or "").strip().lower()
+        if rel in relevance_counts:
+            relevance_counts[rel] += 1
+
+    return {
+        "n": n,
+        "year_range": year_range,
+        "tier_counts": tier_counts,
+        "kp_counts": kp_counts,
+        "db_counts": db_counts,
+        "geo_counts": geo_counts,
+        "design_counts": design_counts,
+        "relevance_counts": relevance_counts,
+    }
+
+
+def build_tier_table(stats, config):
+    """Render a tier distribution table as markdown + a list of top studies per tier."""
+    rows = ["| Tier | n | % of corpus |", "|---|---|---|"]
+    total = stats["n"]
+    for tier, count in stats["tier_counts"].items():
+        if count == 0:
+            continue
+        pct = round(100 * count / total, 1) if total else 0
+        rows.append(f"| {tier} | {count} | {pct}% |")
+    return "\n".join(rows)
+
+
+def build_kp_table(stats):
+    rows = ["| Kirkpatrick level | n | % of corpus |", "|---|---|---|"]
+    total = stats["n"]
+    for kp, count in stats["kp_counts"].items():
+        if count == 0:
+            continue
+        pct = round(100 * count / total, 1) if total else 0
+        rows.append(f"| {kp} | {count} | {pct}% |")
+    return "\n".join(rows)
+
+
+def build_geo_table(stats):
+    if not stats["geo_counts"]:
+        return None
+    rows = ["| Country / setting | n |", "|---|---|"]
+    sorted_geo = sorted(stats["geo_counts"].items(), key=lambda x: -x[1])
+    for country, count in sorted_geo[:15]:
+        rows.append(f"| {country} | {count} |")
+    return "\n".join(rows)
+
+
+def build_db_table(stats):
+    rows = ["| Database | n studies sourced |", "|---|---|"]
+    for db, count in sorted(stats["db_counts"].items(), key=lambda x: -x[1]):
+        rows.append(f"| {db} | {count} |")
+    return "\n".join(rows)
+
+
+def build_mermaid_flowchart(stats, config):
+    """Build a Mermaid flowchart linking theoretical anchor → evidence → implications."""
+    topic = config["research_topic"][:60]
+    top_tiers = sorted(
+        [(t, c) for t, c in stats["tier_counts"].items() if c > 0],
+        key=lambda x: -x[1]
+    )[:5]
+    tier_nodes = "\n".join([f'    T{i}["{t} (n={c})"]' for i, (t, c) in enumerate(top_tiers)])
+    tier_links = "\n".join([f"    Anchor --> T{i}" for i in range(len(top_tiers))])
+    # Implications based on KP ceiling
+    has_l3 = stats["kp_counts"].get("L3 Behaviour", 0) > 0
+    has_l4 = stats["kp_counts"].get("L4 Results", 0) > 0
+    if has_l4:
+        ceiling = "L4 Results reached<br/>(strongest policy claims possible)"
+    elif has_l3:
+        ceiling = "L3 Behaviour reached<br/>(practice-level claims defensible)"
+    else:
+        ceiling = "L1/L2 only<br/>(knowledge-level claims only)"
+
+    tier_to_imp = "\n".join([f"    T{i} --> Ceiling" for i in range(len(top_tiers))])
+
+    return f"""flowchart TD
+    Anchor["Theoretical anchor:<br/>{topic}"]
+{tier_nodes}
+    Ceiling["Evidence ceiling:<br/>{ceiling}"]
+    Policy["Policy implications<br/>(see Section 6)"]
+{tier_links}
+{tier_to_imp}
+    Ceiling --> Policy
+    classDef anchor fill:#E6F1FB,stroke:#0C447C,color:#0C447C
+    classDef tier fill:#E1F5EE,stroke:#085041,color:#085041
+    classDef ceiling fill:#FAEEDA,stroke:#633806,color:#633806
+    classDef policy fill:#EEEDFE,stroke:#3C3489,color:#3C3489
+    class Anchor anchor
+    class Ceiling ceiling
+    class Policy policy"""
+
+
+def render_mermaid(diagram_code, height=420):
+    """Render a Mermaid diagram inside Streamlit via embedded HTML."""
+    html = f"""
+    <div style="background:white;border-radius:8px;padding:1rem;">
+      <pre class="mermaid" style="background:transparent;">
+{diagram_code}
+      </pre>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <script>
+      mermaid.initialize({{ startOnLoad: true, theme: 'default', securityLevel: 'loose' }});
+    </script>
+    """
+    st.components.v1.html(html, height=height, scrolling=False)
+
+
+def synthesise_corpus(corpus, config):
+    """Generate structured synthesis: pre-computed tables + AI narrative in user's voice."""
+    if not corpus:
+        return None, "Corpus is empty."
+
+    stats = compute_corpus_stats(corpus, config)
+
+    # Build study listing for narrative context
+    listing = "\n".join([
+        f"- {c['authors']} ({c['year']}) [{c.get('tier','?')}] [{c.get('kp','N/A')}] [{c['db']}]: {c['title']}"
+        + (f" | Country: {c['extraction'].get('country','')}" if c.get("extraction") and c["extraction"].get("country") else "")
+        + (f" | Finding: {c['extraction']['keyFinding']}" if c.get("extraction") and c["extraction"].get("keyFinding") else "")
+        for c in corpus
+    ])
+
+    # Pass pre-computed stats to Claude as context
+    stats_summary = f"""PRE-COMPUTED CORPUS STATISTICS (use these exact numbers in your narrative — do not recompute):
+
+Total studies: {stats['n']}
+Year range: {stats['year_range']}
+
+Tier distribution:
+{chr(10).join([f"  • {t}: {c}" for t, c in stats['tier_counts'].items() if c > 0])}
+
+Kirkpatrick level distribution:
+{chr(10).join([f"  • {k}: {c}" for k, c in stats['kp_counts'].items() if c > 0])}
+
+Database sourcing:
+{chr(10).join([f"  • {d}: {c}" for d, c in sorted(stats['db_counts'].items(), key=lambda x: -x[1])])}
+
+Geographic distribution (from extractions):
+{chr(10).join([f"  • {g}: {c}" for g, c in sorted(stats['geo_counts'].items(), key=lambda x: -x[1])[:10]]) if stats['geo_counts'] else "  • (No extraction data — geographic synthesis will be limited)"}
+
+Study design distribution (from extractions):
+{chr(10).join([f"  • {d}: {c}" for d, c in sorted(stats['design_counts'].items(), key=lambda x: -x[1])[:8]]) if stats['design_counts'] else "  • (No extraction data)"}
+"""
+
+    user_msg = stats_summary + "\n\nCORPUS LISTING:\n" + listing
+    text, err = call_claude(build_synth_system_prompt(), user_msg, max_tokens=4000)
+
+    if err:
+        return None, err
+
+    return {"narrative": text, "stats": stats}, None
 
 
 def call_claude(system_prompt, user_message, max_tokens=1000):
@@ -411,19 +655,6 @@ Screening rationale: {article.get('rationale','')}"""
         return json.loads(cleaned), None
     except Exception as e:
         return None, f"Parse error: {e}\nRaw: {text[:200]}"
-
-
-def synthesise_corpus(corpus):
-    if not corpus:
-        return None, "Corpus is empty."
-    dbs = ", ".join(set(c["db"] for c in corpus))
-    listing = "\n".join([
-        f"- {c['authors']} ({c['year']}) [{c.get('tier','?')}] [{c.get('kp','N/A')}] [{c['db']}]: {c['title']}"
-        + (f" | Finding: {c['extraction']['keyFinding']}" if c.get("extraction") and c["extraction"].get("keyFinding") else "")
-        for c in corpus
-    ])
-    user_msg = f"Corpus (n={len(corpus)}) from databases: {dbs}\n\n{listing}"
-    return call_claude(build_synth_system_prompt(), user_msg, max_tokens=2000)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -525,6 +756,20 @@ with st.sidebar:
             value=st.session_state.config["kp_description"],
             height=120,
         )
+
+    with st.expander("✍️ Writing style", expanded=False):
+        st.caption("Paste 2-3 paragraphs of your own academic writing. Claude will mimic your sentence rhythm, vocabulary, hedging language, and paragraph openers in the synthesis narrative.")
+        st.session_state.config["writing_style_sample"] = st.text_area(
+            "Writing style sample (your own published work)",
+            value=st.session_state.config.get("writing_style_sample", ""),
+            height=250,
+            help="Best results: paste 300-500 words from your most representative paper. The voice features are extracted automatically.",
+        )
+        if st.session_state.config.get("writing_style_sample", "").strip():
+            words = len(st.session_state.config["writing_style_sample"].split())
+            st.caption(f"✓ {words} words loaded · style will be applied to synthesis narrative")
+        else:
+            st.warning("No style sample set — synthesis will use a generic academic voice.")
 
     st.divider()
     if st.button("Reset to defaults"):
@@ -860,26 +1105,148 @@ with tab_corpus:
 
 # ─── SYNTHESIS TAB ────────────────────────────────────────────
 with tab_synth:
-    st.subheader("Corpus synthesis")
-    st.caption(f"Synthesises your corpus (n={len(st.session_state.corpus)}) against your theoretical anchor.")
+    st.subheader("Structured corpus synthesis")
+    n_corpus = len(st.session_state.corpus)
+    has_style = bool(st.session_state.config.get("writing_style_sample", "").strip())
+    n_extracted = sum(1 for c in st.session_state.corpus if c.get("extraction"))
 
-    if not st.session_state.corpus:
-        st.info("Add studies to the corpus first.")
+    cap_bits = [f"Corpus n={n_corpus}"]
+    cap_bits.append("✓ writing style loaded" if has_style else "⚠ no writing style set")
+    cap_bits.append(f"{n_extracted}/{n_corpus} extracted")
+    st.caption(" · ".join(cap_bits))
+
+    if n_corpus == 0:
+        st.info("Add studies to the corpus first, then optionally run AI extraction for richer geographic/design tables.")
     else:
-        if st.button("✨ Generate synthesis", type="primary", disabled=not client):
-            if client:
-                with st.spinner("Analysing corpus..."):
-                    text, err = synthesise_corpus(st.session_state.corpus)
-                    if text:
-                        st.session_state.synth_text = text
-                    else:
-                        st.error(f"Error: {err}")
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            if st.button("✨ Generate structured synthesis", type="primary", disabled=not client):
+                if client:
+                    with st.spinner("Computing statistics and generating narrative..."):
+                        result, err = synthesise_corpus(st.session_state.corpus, st.session_state.config)
+                        if result:
+                            st.session_state.synth_data = result
+                            st.session_state.synth_text = result["narrative"]
+                        else:
+                            st.error(f"Error: {err}")
+        with c2:
+            if st.session_state.synth_data:
+                # Build downloadable markdown
+                stats = st.session_state.synth_data["stats"]
+                narrative = st.session_state.synth_data["narrative"]
+                sections = [s.strip() for s in narrative.split("===SECTION===")]
+                section_titles = [
+                    "1. Corpus Overview",
+                    "2. Tier Distribution and Evidence Weight",
+                    "3. Kirkpatrick Outcome Ceiling",
+                    "4. Geographic and Contextual Variation",
+                    "5. Key Research Gaps",
+                    "6. Policy Implications",
+                    "7. Conclusion",
+                ]
+                md_parts = [f"# Synthesis: {st.session_state.config['research_topic']}\n"]
+                md_parts.append(f"_Generated {datetime.now().strftime('%Y-%m-%d %H:%M')} · n={stats['n']} studies_\n\n")
+                for i, title in enumerate(section_titles):
+                    md_parts.append(f"## {title}\n")
+                    # Add table for relevant sections
+                    if i == 0:
+                        md_parts.append(f"**Total studies:** {stats['n']}  ·  **Year range:** {stats['year_range']}\n\n")
+                        md_parts.append("### Database sourcing\n" + build_db_table(stats) + "\n\n")
+                    elif i == 1:
+                        md_parts.append("### Tier distribution\n" + build_tier_table(stats, st.session_state.config) + "\n\n")
+                    elif i == 2:
+                        md_parts.append("### Kirkpatrick level distribution\n" + build_kp_table(stats) + "\n\n")
+                    elif i == 3:
+                        geo_t = build_geo_table(stats)
+                        if geo_t:
+                            md_parts.append("### Geographic distribution\n" + geo_t + "\n\n")
+                    if i < len(sections):
+                        md_parts.append(sections[i] + "\n\n")
+                full_md = "".join(md_parts)
+                st.download_button(
+                    "📥 Download (.md)",
+                    full_md,
+                    file_name=f"synthesis_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
 
-        if st.session_state.synth_text:
-            st.markdown(st.session_state.synth_text)
-            st.download_button(
-                "📥 Download synthesis (markdown)",
-                st.session_state.synth_text,
-                file_name=f"synthesis_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
-                mime="text/markdown",
-            )
+        # ─── Render structured synthesis output ────────────────────
+        if st.session_state.synth_data:
+            stats = st.session_state.synth_data["stats"]
+            narrative = st.session_state.synth_data["narrative"]
+            sections = [s.strip() for s in narrative.split("===SECTION===")]
+
+            st.divider()
+
+            # Section 1: Corpus Overview
+            st.markdown("### 1. Corpus Overview")
+            ov_cols = st.columns(4)
+            ov_cols[0].metric("Total studies", stats["n"])
+            ov_cols[1].metric("Year range", stats["year_range"])
+            ov_cols[2].metric("Databases", len(stats["db_counts"]))
+            ov_cols[3].metric("Tiers used", sum(1 for c in stats["tier_counts"].values() if c > 0))
+            st.markdown("**Database sourcing**")
+            st.markdown(build_db_table(stats))
+            if len(sections) > 0 and sections[0]:
+                st.markdown(sections[0])
+
+            st.divider()
+
+            # Section 2: Tier Distribution
+            st.markdown("### 2. Tier Distribution and Evidence Weight")
+            st.markdown(build_tier_table(stats, st.session_state.config))
+            if len(sections) > 1 and sections[1]:
+                st.markdown(sections[1])
+
+            st.divider()
+
+            # Section 3: Kirkpatrick Ceiling
+            st.markdown("### 3. Kirkpatrick Outcome Ceiling")
+            st.markdown(build_kp_table(stats))
+            if len(sections) > 2 and sections[2]:
+                st.markdown(sections[2])
+
+            st.divider()
+
+            # Section 4: Geographic Spread
+            st.markdown("### 4. Geographic and Contextual Variation")
+            geo_t = build_geo_table(stats)
+            if geo_t:
+                st.markdown(geo_t)
+            else:
+                st.info("No geographic data available — run AI extraction on corpus studies for this section.")
+            if len(sections) > 3 and sections[3]:
+                st.markdown(sections[3])
+
+            st.divider()
+
+            # Synthesis Flowchart
+            st.markdown("### Synthesis Flowchart")
+            st.caption("Visual map of the theoretical anchor, evidence tiers, and policy ceiling.")
+            mermaid_code = build_mermaid_flowchart(stats, st.session_state.config)
+            render_mermaid(mermaid_code, height=480)
+
+            with st.expander("Flowchart source (Mermaid)", expanded=False):
+                st.code(mermaid_code, language="mermaid")
+
+            st.divider()
+
+            # Section 5: Research Gaps
+            st.markdown("### 5. Key Research Gaps")
+            if len(sections) > 4 and sections[4]:
+                st.markdown(sections[4])
+
+            st.divider()
+
+            # Section 6: Policy Implications
+            st.markdown("### 6. Policy Implications")
+            if len(sections) > 5 and sections[5]:
+                st.markdown(sections[5])
+
+            st.divider()
+
+            # Section 7: Conclusion
+            st.markdown("### 7. Conclusion")
+            if len(sections) > 6 and sections[6]:
+                st.markdown(sections[6])
