@@ -206,6 +206,225 @@ def openalex_count_only(query, date_from, date_to):
         return 0, str(e)
 
 
+# ─── Semantic Scholar ───────────────────────────────────────────
+def search_semanticscholar(query, date_from, date_to, max_results):
+    """Semantic Scholar API — broad coverage with AI-enhanced search, abstracts included.
+    Free, no API key needed for basic use. Rate-limited ~100 req/5min without key."""
+    try:
+        # Cap max_results at 100 (S2 hard limit per request)
+        limit = min(max_results, 100)
+        r = requests.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params={
+                "query": query,
+                "limit": limit,
+                "year": f"{date_from}-{date_to}",
+                "fields": "title,abstract,authors,year,journal,externalIds,url",
+            },
+            headers={"User-Agent": "LiteratureResearchTool/1.0"},
+            timeout=25,
+        )
+        r.raise_for_status()
+        d = r.json()
+        total = d.get("total", 0)
+        items = []
+        for p in d.get("data", []):
+            authors = ", ".join([a.get("name", "") for a in (p.get("authors") or [])[:3]])
+            if len((p.get("authors") or [])) > 3:
+                authors += " et al."
+            ext = p.get("externalIds") or {}
+            pid = ext.get("DOI") or ext.get("PubMed") or p.get("paperId", "")
+            items.append({
+                "id": f"s2_{p.get('paperId','')}",
+                "pmid": ext.get("PubMed", ""),
+                "doi": ext.get("DOI", ""),
+                "title": p.get("title") or "No title",
+                "authors": authors,
+                "journal": (p.get("journal") or {}).get("name", ""),
+                "year": str(p.get("year") or ""),
+                "db": "Semantic Scholar",
+                "url": p.get("url") or (f"https://doi.org/{ext.get('DOI')}" if ext.get("DOI") else ""),
+                "abstract": (p.get("abstract") or "")[:2000],
+                "decision": "Pending",
+                "tier": "",
+                "kp": "N/A",
+                "rationale": "",
+                "confidence": "",
+                "extraction": None,
+            })
+        return items, total
+    except Exception as e:
+        st.warning(f"Semantic Scholar error: {e}")
+        return [], 0
+
+
+def semanticscholar_count_only(query, date_from, date_to):
+    try:
+        r = requests.get(
+            "https://api.semanticscholar.org/graph/v1/paper/search",
+            params={"query": query, "limit": 1, "year": f"{date_from}-{date_to}", "fields": "title"},
+            headers={"User-Agent": "LiteratureResearchTool/1.0"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return int(r.json().get("total", 0)), None
+    except Exception as e:
+        return 0, str(e)
+
+
+# ─── Crossref ───────────────────────────────────────────────────
+def search_crossref(query, date_from, date_to, max_results):
+    """Crossref API — broad metadata coverage of every DOI registered with Crossref.
+    Catches journals not indexed in PubMed (engineering, education-specific, regional)."""
+    try:
+        # Crossref caps rows at 1000 per request
+        rows = min(max_results, 1000)
+        r = requests.get(
+            "https://api.crossref.org/works",
+            params={
+                "query": query,
+                "rows": rows,
+                "filter": f"from-pub-date:{date_from},until-pub-date:{date_to},type:journal-article",
+                "select": "DOI,title,author,container-title,issued,abstract,URL",
+            },
+            headers={"User-Agent": "LiteratureResearchTool/1.0 (research)"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        d = r.json()
+        msg = d.get("message", {})
+        total = msg.get("total-results", 0)
+        items = []
+        for w in msg.get("items", []):
+            title_list = w.get("title") or []
+            title = title_list[0] if title_list else "No title"
+            authors_raw = w.get("author") or []
+            author_names = [
+                f"{(a.get('given') or '').strip()} {(a.get('family') or '').strip()}".strip()
+                for a in authors_raw[:3]
+            ]
+            authors = ", ".join([a for a in author_names if a])
+            if len(authors_raw) > 3:
+                authors += " et al."
+            journal = (w.get("container-title") or [""])[0]
+            issued = w.get("issued", {}).get("date-parts", [[]])[0]
+            year = str(issued[0]) if issued else ""
+            doi = w.get("DOI", "")
+            # Strip Crossref's JATS XML tags from abstract if present
+            abstract = w.get("abstract") or ""
+            if abstract:
+                import re
+                abstract = re.sub(r"<[^>]+>", " ", abstract)
+                abstract = re.sub(r"\s+", " ", abstract).strip()[:2000]
+            items.append({
+                "id": f"cr_{doi.replace('/', '_')}" if doi else f"cr_{hash(title) & 0xfffffff:x}",
+                "pmid": "",
+                "doi": doi,
+                "title": title,
+                "authors": authors,
+                "journal": journal,
+                "year": year,
+                "db": "Crossref",
+                "url": w.get("URL") or (f"https://doi.org/{doi}" if doi else ""),
+                "abstract": abstract,
+                "decision": "Pending",
+                "tier": "",
+                "kp": "N/A",
+                "rationale": "",
+                "confidence": "",
+                "extraction": None,
+            })
+        return items, total
+    except Exception as e:
+        st.warning(f"Crossref error: {e}")
+        return [], 0
+
+
+def crossref_count_only(query, date_from, date_to):
+    try:
+        r = requests.get(
+            "https://api.crossref.org/works",
+            params={
+                "query": query,
+                "rows": 0,
+                "filter": f"from-pub-date:{date_from},until-pub-date:{date_to},type:journal-article",
+            },
+            headers={"User-Agent": "LiteratureResearchTool/1.0"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return int(r.json().get("message", {}).get("total-results", 0)), None
+    except Exception as e:
+        return 0, str(e)
+
+
+# ─── ERIC (Education Resources Information Center) ──────────────
+def search_eric(query, date_from, date_to, max_results):
+    """ERIC API — education-specific database. Highly relevant for dental EDUCATION,
+    accreditation, curriculum design, faculty development research. Free, no key."""
+    try:
+        rows = min(max_results, 2000)  # ERIC supports up to 2000 per request
+        # Build query with date filter; ERIC uses Solr-style syntax
+        full_query = f'({query}) AND publicationdateyear:[{date_from} TO {date_to}]'
+        r = requests.get(
+            "https://api.ies.ed.gov/eric/",
+            params={
+                "search": full_query,
+                "format": "json",
+                "rows": rows,
+                "fields": "id,title,author,source,publicationdateyear,description,url",
+            },
+            timeout=25,
+        )
+        r.raise_for_status()
+        d = r.json()
+        resp = d.get("response", {})
+        total = resp.get("numFound", 0)
+        items = []
+        for doc in resp.get("docs", []):
+            authors_list = doc.get("author") or []
+            authors = ", ".join(authors_list[:3])
+            if len(authors_list) > 3:
+                authors += " et al."
+            eric_id = doc.get("id", "")
+            items.append({
+                "id": f"eric_{eric_id}",
+                "pmid": "",
+                "doi": "",
+                "title": doc.get("title") or "No title",
+                "authors": authors,
+                "journal": (doc.get("source") or [""])[0] if isinstance(doc.get("source"), list) else (doc.get("source") or ""),
+                "year": str(doc.get("publicationdateyear") or ""),
+                "db": "ERIC",
+                "url": f"https://eric.ed.gov/?id={eric_id}" if eric_id else "",
+                "abstract": (doc.get("description") or "")[:2000],
+                "decision": "Pending",
+                "tier": "",
+                "kp": "N/A",
+                "rationale": "",
+                "confidence": "",
+                "extraction": None,
+            })
+        return items, total
+    except Exception as e:
+        st.warning(f"ERIC error: {e}")
+        return [], 0
+
+
+def eric_count_only(query, date_from, date_to):
+    try:
+        full_query = f'({query}) AND publicationdateyear:[{date_from} TO {date_to}]'
+        r = requests.get(
+            "https://api.ies.ed.gov/eric/",
+            params={"search": full_query, "format": "json", "rows": 0},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return int(r.json().get("response", {}).get("numFound", 0)), None
+    except Exception as e:
+        return 0, str(e)
+
+
 def search_pubmed(query, date_from, date_to, max_results):
     """PubMed search with pagination support — fetches up to max_results IDs,
     then batches esummary/efetch calls in chunks of 200 to respect URL limits."""
@@ -1797,66 +2016,106 @@ with tab_search:
     if preview_btn and query.strip():
         with st.spinner("Checking counts across databases..."):
             counts = {}
-            for db in ["PubMed", "Europe PMC", "OpenAlex"]:
+            for db in ["PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC"]:
                 if db == "PubMed":
                     n, e = pubmed_count_only(query, date_from, date_to)
                 elif db == "Europe PMC":
                     n, e = epmc_count_only(query, date_from, date_to)
-                else:
+                elif db == "OpenAlex":
                     n, e = openalex_count_only(query, date_from, date_to)
+                elif db == "Semantic Scholar":
+                    n, e = semanticscholar_count_only(query, date_from, date_to)
+                elif db == "Crossref":
+                    n, e = crossref_count_only(query, date_from, date_to)
+                else:  # ERIC
+                    n, e = eric_count_only(query, date_from, date_to)
                 counts[db] = (n, e)
 
-        # Render the count summary prominently
-        st.markdown("**Preview counts** (these are the TOTAL matches before any retrieval cap):")
-        pc1, pc2, pc3 = st.columns(3)
-        for col, (db, (n, e)) in zip([pc1, pc2, pc3], counts.items()):
+        # Render the count summary prominently — 2 rows of 3
+        st.markdown("**Preview counts** (TOTAL matches before any retrieval cap):")
+        db_list = list(counts.items())
+        row1 = st.columns(3)
+        row2 = st.columns(3)
+        for col, (db, (n, e)) in zip(row1 + row2, db_list):
             with col:
                 if e:
                     st.metric(db, "error")
-                    st.caption(f"⚠️ {e[:100]}")
+                    st.caption(f"⚠️ {e[:80]}")
                 else:
                     st.metric(db, f"{n:,}")
                     if n < 30:
-                        st.caption("🔴 Very low — query may be too narrow")
+                        st.caption("🔴 Very low")
                     elif n < 100:
-                        st.caption("🟡 Modest — consider broadening")
+                        st.caption("🟡 Modest")
                     else:
-                        st.caption("🟢 Healthy yield")
+                        st.caption("🟢 Healthy")
 
         if all(c[0] < 30 for c in counts.values() if not c[1]):
             st.warning("All databases return very few matches. **Try:** removing the most restrictive AND clause, or use the '🤖 Build query with AI' button at the top to generate a broader query from your topic + criteria.")
 
     selected_dbs = st.multiselect(
         "Databases to search",
-        ["PubMed", "Europe PMC", "OpenAlex"],
+        ["PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC"],
         default=["PubMed", "Europe PMC", "OpenAlex"],
+        help=(
+            "**PubMed**: biomedical core, MEDLINE-indexed. "
+            "**Europe PMC**: PubMed + Europe-specific + preprints (bioRxiv/medRxiv). "
+            "**OpenAlex**: ~250M scholarly works, broad coverage. "
+            "**Semantic Scholar**: AI-enhanced semantic search, strong CS/AI coverage. "
+            "**Crossref**: every DOI-registered journal article (catches journals not in PubMed). "
+            "**ERIC**: education research — highly relevant for dental education, accreditation, curriculum studies."
+        ),
     )
 
     if search_btn and query.strip():
         progress = st.progress(0, text="Searching...")
         all_results = []
         status_lines = []
+        n_dbs = len(selected_dbs)
+        step = 100 // max(n_dbs, 1)
+        progress_value = 0
 
         if "PubMed" in selected_dbs:
-            progress.progress(15, text="Querying PubMed...")
+            progress.progress(min(progress_value + 5, 99), text="Querying PubMed...")
             items, total = search_pubmed(query, date_from, date_to, max_per_db)
             all_results.extend(items)
             status_lines.append(f"PubMed: {len(items)} of {total:,} total")
-            progress.progress(40, text="Done PubMed")
+            progress_value += step
 
         if "Europe PMC" in selected_dbs:
-            progress.progress(50, text="Querying Europe PMC...")
+            progress.progress(min(progress_value + 5, 99), text="Querying Europe PMC...")
             items, total = search_epmc(query, date_from, date_to, max_per_db)
             all_results.extend(items)
             status_lines.append(f"Europe PMC: {len(items)} of {total:,} total")
-            progress.progress(70, text="Done Europe PMC")
+            progress_value += step
 
         if "OpenAlex" in selected_dbs:
-            progress.progress(80, text="Querying OpenAlex...")
+            progress.progress(min(progress_value + 5, 99), text="Querying OpenAlex...")
             items, total = search_openalex(query, date_from, date_to, max_per_db)
             all_results.extend(items)
             status_lines.append(f"OpenAlex: {len(items)} of {total:,} total")
-            progress.progress(95, text="Done OpenAlex")
+            progress_value += step
+
+        if "Semantic Scholar" in selected_dbs:
+            progress.progress(min(progress_value + 5, 99), text="Querying Semantic Scholar...")
+            items, total = search_semanticscholar(query, date_from, date_to, max_per_db)
+            all_results.extend(items)
+            status_lines.append(f"Semantic Scholar: {len(items)} of {total:,} total")
+            progress_value += step
+
+        if "Crossref" in selected_dbs:
+            progress.progress(min(progress_value + 5, 99), text="Querying Crossref...")
+            items, total = search_crossref(query, date_from, date_to, max_per_db)
+            all_results.extend(items)
+            status_lines.append(f"Crossref: {len(items)} of {total:,} total")
+            progress_value += step
+
+        if "ERIC" in selected_dbs:
+            progress.progress(min(progress_value + 5, 99), text="Querying ERIC...")
+            items, total = search_eric(query, date_from, date_to, max_per_db)
+            all_results.extend(items)
+            status_lines.append(f"ERIC: {len(items)} of {total:,} total")
+            progress_value += step
 
         deduped = dedup_results(all_results)
         for i, r in enumerate(deduped):
@@ -1922,7 +2181,7 @@ with tab_screen:
         with fc1:
             filter_dec = st.selectbox("Decision filter", ["All", "Pending", "Include", "Maybe", "Exclude"], key="filter_dec")
         with fc2:
-            filter_db = st.selectbox("Database filter", ["All", "PubMed", "Europe PMC", "OpenAlex"], key="filter_db")
+            filter_db = st.selectbox("Database filter", ["All", "PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC"], key="filter_db")
         with fc3:
             n_pending = sum(1 for r in st.session_state.results if r["decision"] == "Pending")
             if st.button(f"🤖 AI screen all pending ({n_pending})", type="primary", disabled=not client or n_pending == 0):
