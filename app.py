@@ -91,6 +91,8 @@ def init_state():
         "synth_chat": [],
         "trends_data": None,
         "trends_papers": [],
+        "appraisals": {},  # study_id -> appraisal result dict
+        "elsevier_key": "",  # Optional Scopus/EMBASE API key
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -423,6 +425,543 @@ def eric_count_only(query, date_from, date_to):
         return int(r.json().get("response", {}).get("numFound", 0)), None
     except Exception as e:
         return 0, str(e)
+
+
+# ─── Scopus (Elsevier — requires API key, free tier available) ──
+def _get_elsevier_key():
+    """Get the Elsevier API key from session state or secrets."""
+    if st.session_state.get("elsevier_key"):
+        return st.session_state["elsevier_key"]
+    try:
+        return st.secrets.get("ELSEVIER_API_KEY", "")
+    except Exception:
+        return ""
+
+
+def search_scopus(query, date_from, date_to, max_results):
+    """Scopus Search API — paid Elsevier database, free API key tier available.
+    Register at https://dev.elsevier.com to obtain a key. Free tier: 20,000 req/week."""
+    key = _get_elsevier_key()
+    if not key:
+        st.warning("Scopus skipped: no Elsevier API key. Add one in the sidebar under '🔑 API keys'.")
+        return [], 0
+    try:
+        # Scopus caps `count` at 25 per request; paginate for larger requests
+        all_items = []
+        total_available = 0
+        BATCH = 25
+        for offset in range(0, min(max_results, 5000), BATCH):
+            r = requests.get(
+                "https://api.elsevier.com/content/search/scopus",
+                params={
+                    "query": f'TITLE-ABS-KEY({query}) AND PUBYEAR > {int(date_from)-1} AND PUBYEAR < {int(date_to)+1}',
+                    "count": min(BATCH, max_results - offset),
+                    "start": offset,
+                },
+                headers={"X-ELS-APIKey": key, "Accept": "application/json"},
+                timeout=25,
+            )
+            if r.status_code == 401:
+                st.warning("Scopus: API key rejected (check key is valid for Search API).")
+                return [], 0
+            if r.status_code == 429:
+                st.warning("Scopus: rate limit hit. Try again later.")
+                break
+            r.raise_for_status()
+            d = r.json()
+            sr = d.get("search-results", {})
+            if not total_available:
+                try:
+                    total_available = int(sr.get("opensearch:totalResults", 0))
+                except Exception:
+                    total_available = 0
+            entries = sr.get("entry", [])
+            if not entries or (len(entries) == 1 and entries[0].get("error")):
+                break
+            for e in entries:
+                doi = e.get("prism:doi", "")
+                title = e.get("dc:title", "No title")
+                authors = e.get("dc:creator", "")
+                journal = e.get("prism:publicationName", "")
+                pub_date = e.get("prism:coverDate", "")
+                year = pub_date.split("-")[0] if pub_date else ""
+                scopus_id = e.get("dc:identifier", "").replace("SCOPUS_ID:", "")
+                all_items.append({
+                    "id": f"sc_{scopus_id}",
+                    "pmid": e.get("pubmed-id", ""),
+                    "doi": doi,
+                    "title": title,
+                    "authors": authors,
+                    "journal": journal,
+                    "year": year,
+                    "db": "Scopus",
+                    "url": f"https://doi.org/{doi}" if doi else "",
+                    "abstract": "",  # Abstract endpoint requires separate call
+                    "decision": "Pending",
+                    "stage": 0,
+                    "tier": "",
+                    "kp": "N/A",
+                    "rationale": "",
+                    "confidence": "",
+                    "extraction": None,
+                })
+            if len(entries) < BATCH:
+                break
+        return all_items, total_available
+    except Exception as e:
+        st.warning(f"Scopus error: {e}")
+        return [], 0
+
+
+def scopus_count_only(query, date_from, date_to):
+    key = _get_elsevier_key()
+    if not key:
+        return 0, "No Elsevier API key"
+    try:
+        r = requests.get(
+            "https://api.elsevier.com/content/search/scopus",
+            params={
+                "query": f'TITLE-ABS-KEY({query}) AND PUBYEAR > {int(date_from)-1} AND PUBYEAR < {int(date_to)+1}',
+                "count": 0,
+            },
+            headers={"X-ELS-APIKey": key, "Accept": "application/json"},
+            timeout=15,
+        )
+        if r.status_code == 401:
+            return 0, "API key rejected"
+        r.raise_for_status()
+        sr = r.json().get("search-results", {})
+        return int(sr.get("opensearch:totalResults", 0)), None
+    except Exception as e:
+        return 0, str(e)
+
+
+# ─── EMBASE (Elsevier — requires PAID institutional subscription) ──
+def search_embase(query, date_from, date_to, max_results):
+    """EMBASE Search API — requires Elsevier API key AND institutional EMBASE subscription
+    (i.e., the API key must be associated with an institution that pays for EMBASE access).
+    Without subscription, the endpoint returns an empty result set even with a valid key."""
+    key = _get_elsevier_key()
+    if not key:
+        st.warning("EMBASE skipped: no Elsevier API key. Add one in the sidebar under '🔑 API keys'.")
+        return [], 0
+    try:
+        # EMBASE Search API endpoint
+        r = requests.get(
+            "https://api.elsevier.com/content/embase/article",
+            params={
+                "query": query,
+                "date": f"{date_from}-{date_to}",
+                "count": min(max_results, 100),
+            },
+            headers={"X-ELS-APIKey": key, "Accept": "application/json"},
+            timeout=25,
+        )
+        if r.status_code == 401:
+            st.warning("EMBASE: API key rejected or no institutional EMBASE subscription detected.")
+            return [], 0
+        if r.status_code == 403:
+            st.warning("EMBASE: institutional subscription required. Your API key works but does not have EMBASE access.")
+            return [], 0
+        r.raise_for_status()
+        d = r.json()
+        # EMBASE response structure
+        results = d.get("results", {}).get("result", []) if isinstance(d.get("results"), dict) else []
+        total = int(d.get("results", {}).get("totalResults", 0)) if isinstance(d.get("results"), dict) else 0
+        items = []
+        for e in results:
+            doi = e.get("doi", "")
+            title = e.get("title", "No title")
+            authors = ", ".join(e.get("authors", [])[:3])
+            if len(e.get("authors", [])) > 3:
+                authors += " et al."
+            embase_id = e.get("embaseID", "")
+            items.append({
+                "id": f"em_{embase_id}",
+                "pmid": e.get("pubmedID", ""),
+                "doi": doi,
+                "title": title,
+                "authors": authors,
+                "journal": e.get("source", {}).get("title", "") if isinstance(e.get("source"), dict) else "",
+                "year": str(e.get("year", "")),
+                "db": "EMBASE",
+                "url": f"https://doi.org/{doi}" if doi else "",
+                "abstract": (e.get("abstract") or "")[:2000],
+                "decision": "Pending",
+                "stage": 0,
+                "tier": "",
+                "kp": "N/A",
+                "rationale": "",
+                "confidence": "",
+                "extraction": None,
+            })
+        return items, total
+    except Exception as e:
+        st.warning(f"EMBASE error: {e}")
+        return [], 0
+
+
+def embase_count_only(query, date_from, date_to):
+    key = _get_elsevier_key()
+    if not key:
+        return 0, "No Elsevier API key"
+    try:
+        r = requests.get(
+            "https://api.elsevier.com/content/embase/article",
+            params={"query": query, "date": f"{date_from}-{date_to}", "count": 0},
+            headers={"X-ELS-APIKey": key, "Accept": "application/json"},
+            timeout=15,
+        )
+        if r.status_code in (401, 403):
+            return 0, "Subscription / key required"
+        r.raise_for_status()
+        d = r.json()
+        return int(d.get("results", {}).get("totalResults", 0) if isinstance(d.get("results"), dict) else 0), None
+    except Exception as e:
+        return 0, str(e)
+
+
+# ─── CRITICAL APPRAISAL TOOLS ──────────────────────────────────
+# Embedded checklists for the most-used appraisal frameworks.
+
+APPRAISAL_TOOLS = {
+    "JBI Cross-Sectional": {
+        "description": "JBI Critical Appraisal Checklist for Analytical Cross-Sectional Studies",
+        "applies_to": ["cross-sectional", "cross sectional", "survey", "questionnaire", "kap"],
+        "items": [
+            "Were the criteria for inclusion in the sample clearly defined?",
+            "Were the study subjects and the setting described in detail?",
+            "Was the exposure measured in a valid and reliable way?",
+            "Were objective, standard criteria used for measurement of the condition?",
+            "Were confounding factors identified?",
+            "Were strategies to deal with confounding factors stated?",
+            "Were the outcomes measured in a valid and reliable way?",
+            "Was appropriate statistical analysis used?",
+        ],
+    },
+    "Cochrane RoB 2.0": {
+        "description": "Cochrane Risk of Bias tool 2.0 for randomised controlled trials",
+        "applies_to": ["randomised controlled trial", "randomized controlled trial", "rct", "randomised trial", "randomized trial"],
+        "items": [
+            "Risk of bias arising from the randomisation process",
+            "Risk of bias due to deviations from intended interventions",
+            "Risk of bias due to missing outcome data",
+            "Risk of bias in measurement of the outcome",
+            "Risk of bias in selection of the reported result",
+        ],
+    },
+    "JBI Qualitative": {
+        "description": "JBI Critical Appraisal Checklist for Qualitative Research",
+        "applies_to": ["qualitative", "interview", "focus group", "thematic analysis", "ethnograph", "phenomenolog", "grounded theory"],
+        "items": [
+            "Is there congruity between the stated philosophical perspective and the research methodology?",
+            "Is there congruity between the research methodology and the research question or objectives?",
+            "Is there congruity between the research methodology and the methods used to collect data?",
+            "Is there congruity between the research methodology and the representation and analysis of data?",
+            "Is there congruity between the research methodology and the interpretation of results?",
+            "Is there a statement locating the researcher culturally or theoretically?",
+            "Is the influence of the researcher on the research, and vice versa, addressed?",
+            "Are participants, and their voices, adequately represented?",
+            "Is the research ethical according to current criteria, or is there evidence of ethical approval by an appropriate body?",
+            "Do the conclusions drawn flow from the analysis or interpretation of the data?",
+        ],
+    },
+    "MMAT": {
+        "description": "Mixed Methods Appraisal Tool (MMAT) 2018",
+        "applies_to": ["mixed methods", "mixed-methods"],
+        "items": [
+            "Are there clear research questions?",
+            "Do the collected data allow to address the research questions?",
+            "Is there an adequate rationale for using a mixed methods design?",
+            "Are the different components of the study effectively integrated?",
+            "Are the outputs of the integration of qualitative and quantitative components adequately interpreted?",
+            "Are divergences and inconsistencies between quantitative and qualitative results adequately addressed?",
+            "Do the different components of the study adhere to the quality criteria of each tradition?",
+        ],
+    },
+    "AMSTAR-2": {
+        "description": "AMSTAR-2: A critical appraisal tool for systematic reviews",
+        "applies_to": ["systematic review", "scoping review", "meta-analysis", "umbrella review"],
+        "items": [
+            "Did the research questions and inclusion criteria for the review include the components of PICO?",
+            "Did the report contain an explicit statement that the review methods were established prior to conduct (protocol)?",
+            "Did the review authors explain their selection of study designs for inclusion?",
+            "Did the review authors use a comprehensive literature search strategy?",
+            "Did the review authors perform study selection in duplicate?",
+            "Did the review authors perform data extraction in duplicate?",
+            "Did the review authors provide a list of excluded studies and justify the exclusions?",
+            "Did the review authors describe the included studies in adequate detail?",
+            "Did the review authors use a satisfactory technique for assessing risk of bias in individual studies?",
+            "Did the review authors report on the sources of funding for the studies?",
+            "If meta-analysis was performed, did the authors use appropriate methods for statistical combination?",
+            "If meta-analysis was performed, did the authors assess the potential impact of risk of bias?",
+            "Did the review authors account for risk of bias when interpreting results?",
+            "Did the review authors provide a satisfactory explanation for any heterogeneity observed?",
+            "If quantitative synthesis was performed, did the authors adequately investigate publication bias?",
+            "Did the review authors report any potential sources of conflict of interest, including funding?",
+        ],
+    },
+    "Opinion Papers (Modified)": {
+        "description": "Modified Quality Criteria for Opinion / Position / Commentary Papers",
+        "applies_to": ["opinion", "commentary", "editorial", "perspective", "position paper", "viewpoint", "narrative review", "framework", "position"],
+        "items": [
+            "Are the author's credentials and affiliations relevant to the topic?",
+            "Was the paper published in a peer-reviewed journal of reasonable standing?",
+            "Is the argument structured clearly with a defensible logical progression?",
+            "Are opposing or alternative perspectives acknowledged?",
+            "Is the position supported by appropriate citation of empirical evidence or theory?",
+            "Is the information current at the time of writing?",
+            "Is the relevance to the field clearly articulated?",
+        ],
+    },
+}
+
+
+def select_appraisal_tool(study):
+    """Auto-select the most appropriate appraisal tool based on study design."""
+    e = study.get("extraction") or {}
+    design = (e.get("design") or "").lower()
+    title = (study.get("title") or "").lower()
+    abstract = (study.get("abstract") or "").lower()
+    combined = f"{design} {title} {abstract[:500]}"
+
+    for tool_name, tool_def in APPRAISAL_TOOLS.items():
+        for kw in tool_def["applies_to"]:
+            if kw in combined:
+                return tool_name
+    return "JBI Cross-Sectional"  # default
+
+
+def build_appraisal_prompt(tool_name):
+    tool = APPRAISAL_TOOLS[tool_name]
+    items_block = "\n".join([f"  {i+1}. {item}" for i, item in enumerate(tool["items"])])
+    return f"""You are conducting critical appraisal of a research study using the {tool_name} checklist.
+
+CHECKLIST: {tool['description']}
+
+ITEMS TO SCORE:
+{items_block}
+
+TASK
+For each checklist item, return one of: "Yes", "No", "Unclear", "NA". Use the available information; if the study does not provide enough detail to judge, return "Unclear" — not "No".
+
+Then provide:
+- An OVERALL quality rating: "High" (≥80% Yes among scorable items), "Moderate" (50–79% Yes), or "Low" (<50% Yes OR critical methodological flaw)
+- A short (1–2 sentence) RATIONALE for the rating
+- A recommendation: "Include" if quality is High or Moderate AND the study is methodologically sound; "Exclude" if quality is Low or there are critical flaws
+
+Respond ONLY as valid JSON, no markdown:
+{{
+  "tool": "{tool_name}",
+  "item_scores": [
+    {{ "item": "item text shortened", "rating": "Yes|No|Unclear|NA", "note": "1-line justification" }}
+  ],
+  "overall_rating": "High|Moderate|Low",
+  "rationale": "1-2 sentence explanation",
+  "recommendation": "Include|Exclude",
+  "exclusion_reason": "(only if recommendation=Exclude) brief reason"
+}}"""
+
+
+def appraise_study(study, tool_name=None):
+    """Run AI critical appraisal of a study using the appropriate tool."""
+    if tool_name is None:
+        tool_name = select_appraisal_tool(study)
+    e = study.get("extraction") or {}
+    user_msg = f"""STUDY TO APPRAISE:
+
+Title: {study.get('title','')}
+Authors: {study.get('authors','')}
+Year: {study.get('year','')}
+Journal: {study.get('journal','')}
+
+Abstract: {(study.get('abstract') or '')[:2000]}
+
+Extracted information:
+- Country/Setting: {e.get('country','')}
+- Design: {e.get('design','')}
+- Sample: {e.get('sample','')}
+- Educational Outcome: {e.get('educationalOutcome','')}
+- Key Finding: {e.get('keyFinding','')}
+- Main Limitation: {e.get('mainLimitation','')}
+"""
+    text, err = call_claude(build_appraisal_prompt(tool_name), user_msg, max_tokens=2000)
+    if err:
+        return None, err
+    try:
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        return json.loads(cleaned), None
+    except Exception as ex:
+        return None, f"Parse error: {ex}\nRaw: {text[:500]}"
+
+
+# ─── JOURNAL QUALITY CHECK ─────────────────────────────────────
+
+PREDATORY_PATTERNS = [
+    "omics international", "scientific research publishing",
+    "academic journals", "international journal of recent",
+    "research journal of agriculture", "world academy of",
+    "scholars journal of", "open access journals press",
+    "global research", "european journal of academic",
+]
+
+QUALITY_PUBLISHERS = [
+    "elsevier", "springer", "wiley", "bmj", "lancet", "nature", "science",
+    "sage", "taylor & francis", "routledge", "oxford university press",
+    "cambridge university press", "jama", "nejm", "plos",
+    "cochrane", "biomed central", "frontiers in",
+    "journal of dental", "european journal of dental",
+    "international dental journal", "british dental",
+    "journal of dentistry",
+    "medical education", "academic medicine", "advances in health",
+    "bmc ", "jmir ", "journal of medical internet",
+]
+
+
+def check_journal_quality(journal_name):
+    """Return a quality assessment based on journal name patterns."""
+    if not journal_name:
+        return {"flag": "warning", "reason": "Journal name missing", "advice": "Verify before inclusion"}
+    j = journal_name.lower()
+
+    for pat in PREDATORY_PATTERNS:
+        if pat in j:
+            return {
+                "flag": "critical",
+                "reason": f"Matches known predatory pattern: '{pat}'",
+                "advice": "Recommend EXCLUSION — verify publisher independently",
+            }
+
+    for pub in QUALITY_PUBLISHERS:
+        if pub in j:
+            return {
+                "flag": "good",
+                "reason": f"Reputable publisher/journal ({pub})",
+                "advice": "Journal quality acceptable",
+            }
+
+    if ("international journal of" in j and len(j) < 50) or ("world journal" in j) or ("global journal" in j):
+        return {
+            "flag": "warning",
+            "reason": "Generic title pattern — verify indexing (MEDLINE / Scopus / DOAJ)",
+            "advice": "Check impact factor and indexing before inclusion",
+        }
+
+    return {
+        "flag": "warning",
+        "reason": "Journal not on quality whitelist — verify manually",
+        "advice": "Check journal indexing and peer-review process",
+    }
+
+
+# ─── MANCHESTER-HARVARD REFERENCING ────────────────────────────
+
+def _format_authors_harvard(authors_str, max_authors=20):
+    """Format authors for Manchester-Harvard reference list.
+    'Smith J, Jones K, Brown L' -> 'Smith, J., Jones, K. and Brown, L.'"""
+    if not authors_str:
+        return "Anonymous"
+    has_etal = "et al" in authors_str.lower()
+    raw = authors_str.replace(" et al.", "").replace(" et al", "")
+    parts = [a.strip() for a in raw.split(",") if a.strip()]
+    formatted = []
+    for p in parts[:max_authors]:
+        tokens = p.split()
+        if not tokens:
+            continue
+        # PubMed format: "Smith JA" (surname + initials run together)
+        if len(tokens) >= 2 and len(tokens[-1]) <= 4 and tokens[-1].isupper():
+            surname = " ".join(tokens[:-1])
+            initials = ".".join(list(tokens[-1])) + "."
+            formatted.append(f"{surname}, {initials}")
+        elif len(tokens) >= 2:
+            # "FirstName Surname" — flip to "Surname, F."
+            surname = tokens[-1]
+            initials = ".".join([t[0] for t in tokens[:-1] if t]) + "."
+            formatted.append(f"{surname}, {initials}")
+        else:
+            formatted.append(p)
+    if has_etal or len(parts) > max_authors:
+        if len(formatted) > 1:
+            return ", ".join(formatted[:-1]) + " et al."
+        return (formatted[0] if formatted else "Anonymous") + " et al."
+    if not formatted:
+        return "Anonymous"
+    if len(formatted) == 1:
+        return formatted[0]
+    if len(formatted) == 2:
+        return f"{formatted[0]} and {formatted[1]}"
+    return ", ".join(formatted[:-1]) + " and " + formatted[-1]
+
+
+def _extract_surname(authors_str):
+    """Extract the first author's surname for in-text citations."""
+    if not authors_str:
+        return "Anonymous"
+    first = authors_str.split(",")[0].strip()
+    tokens = first.split()
+    if len(tokens) >= 2 and len(tokens[-1]) <= 4 and tokens[-1].isupper():
+        return " ".join(tokens[:-1])
+    if len(tokens) >= 2:
+        return tokens[-1]
+    return first
+
+
+def format_intext_citation(study):
+    """Manchester-Harvard in-text citation: (Smith, 2023) or (Smith et al., 2023)"""
+    authors_str = study.get("authors", "")
+    year = study.get("year", "n.d.")
+    surname = _extract_surname(authors_str)
+    parts = [a.strip() for a in authors_str.split(",") if a.strip()]
+    has_etal = "et al" in authors_str.lower() or len(parts) > 3
+    if has_etal:
+        return f"({surname} et al., {year})"
+    if len(parts) == 2:
+        second_full = parts[1].strip()
+        tokens = second_full.split()
+        if len(tokens) >= 2 and len(tokens[-1]) <= 4 and tokens[-1].isupper():
+            surname2 = " ".join(tokens[:-1])
+        elif len(tokens) >= 2:
+            surname2 = tokens[-1]
+        else:
+            surname2 = second_full
+        return f"({surname} and {surname2}, {year})"
+    if len(parts) == 3:
+        return f"({surname} et al., {year})"
+    return f"({surname}, {year})"
+
+
+def format_reference_harvard(study):
+    """Format a single study as a Manchester-Harvard reference list entry."""
+    authors = _format_authors_harvard(study.get("authors", ""))
+    year = study.get("year", "n.d.")
+    title = (study.get("title", "") or "").rstrip(".")
+    journal = study.get("journal", "")
+    doi = (study.get("doi") or "").strip()
+
+    ref = f"{authors} ({year}) '{title}'"
+    if journal:
+        ref += f", *{journal}*"
+    ref += "."
+    if doi:
+        doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").replace("doi:", "").strip()
+        ref += f" Available at: https://doi.org/{doi_clean}."
+    elif study.get("pmid"):
+        ref += f" Available at: https://pubmed.ncbi.nlm.nih.gov/{study['pmid']}/."
+    elif study.get("url"):
+        ref += f" Available at: {study['url']}."
+    return ref
+
+
+def build_reference_list(corpus):
+    """Build a sorted Manchester-Harvard reference list from the corpus."""
+    refs = []
+    for c in corpus:
+        ref = format_reference_harvard(c)
+        surname = _extract_surname(c.get("authors", ""))
+        refs.append((surname.lower(), c.get("year", ""), ref))
+    refs.sort(key=lambda x: (x[0], x[1]))
+    return [r[2] for r in refs]
 
 
 def search_pubmed(query, date_from, date_to, max_results):
@@ -824,7 +1363,15 @@ CRITICAL RULES
 - Reference specific {"theme names" if use_themes and themes else "tier names and Kirkpatrick levels"} explicitly in Sections 5, 7, and 8.
 - Avoid every form of assertive phrasing listed above. Hedge throughout.
 - Do not invent studies or findings beyond what is in the corpus list.
-- Do not fabricate citations to specific works that are not in the corpus."""
+- Do not fabricate citations to specific works that are not in the corpus.
+
+REFERENCING STYLE — MANCHESTER-HARVARD
+- All in-text citations must use Manchester-Harvard format: (Smith, 2023), (Smith and Jones, 2023), or (Smith et al., 2023) for three or more authors.
+- Multiple citations in same parenthesis: (Smith, 2023; Jones, 2024).
+- Author-prominent citations: Smith (2023) reported... or Smith and Jones (2023) found... or Smith et al. (2023) argued...
+- Use citations whenever referencing a study from the corpus. Each substantive claim should be supported by 1-3 citations.
+- Do NOT use numbered citations [1], [2] — use author-year only.
+- The corpus listing below contains the studies you may cite. Only cite from this list."""
 
 
 def compute_corpus_stats(corpus, config):
@@ -1058,7 +1605,8 @@ def categorise_exclusion(rationale):
 
 
 def compute_prisma_numbers(results, corpus):
-    """Compute PRISMA-ScR numbers from screening results and final corpus."""
+    """Compute PRISMA-ScR numbers from staged screening results and final corpus.
+    Tracks Title → Abstract → Full-text + Appraisal stages."""
     if not results:
         return None
 
@@ -1067,78 +1615,168 @@ def compute_prisma_numbers(results, corpus):
     for r in results:
         by_db[r["db"]] = by_db.get(r["db"], 0) + 1
 
-    # Total records identified (sum across DBs before dedup is implicit;
-    # but `results` is already deduplicated. We'll report the deduped total
-    # as "records after duplicates removed").
     n_after_dedup = len(results)
 
-    # Screening — pending = not yet decided
-    n_pending = sum(1 for r in results if r["decision"] == "Pending")
-    n_screened = n_after_dedup - n_pending
-    n_excluded_screening = sum(1 for r in results if r["decision"] == "Exclude")
-    n_maybe = sum(1 for r in results if r["decision"] == "Maybe")
-    n_included_screening = sum(1 for r in results if r["decision"] == "Include")
+    # ─── Stage 1: Title screening ───
+    n_s1_screened = sum(1 for r in results if r.get("title_decision", "Pending") != "Pending")
+    n_s1_excluded = sum(1 for r in results if r.get("title_decision") == "Exclude")
+    n_s1_included = sum(1 for r in results if r.get("title_decision") == "Include")
+    n_s1_maybe = sum(1 for r in results if r.get("title_decision") == "Maybe")
 
-    # Exclusion reason breakdown (from rationales on Exclude items)
-    exclusion_reasons = {}
+    # ─── Stage 2: Abstract screening ───
+    n_s2_screened = sum(1 for r in results
+                        if r.get("title_decision") == "Include"
+                        and r.get("abstract_decision", "Pending") != "Pending")
+    n_s2_excluded = sum(1 for r in results if r.get("abstract_decision") == "Exclude")
+    n_s2_included = sum(1 for r in results if r.get("abstract_decision") == "Include")
+    n_s2_maybe = sum(1 for r in results if r.get("abstract_decision") == "Maybe")
+
+    # ─── Stage 3: Full-text + Critical Appraisal ───
+    n_s3_screened = sum(1 for r in results
+                        if r.get("abstract_decision") == "Include"
+                        and r.get("fulltext_decision", "Pending") != "Pending")
+    n_s3_excluded = sum(1 for r in results if r.get("fulltext_decision") == "Exclude")
+    n_s3_included = sum(1 for r in results if r.get("fulltext_decision") == "Include")
+
+    # Exclusion reason breakdown — aggregate across stages
+    exclusion_reasons_s1 = {}
+    exclusion_reasons_s2 = {}
+    exclusion_reasons_s3 = {}
     for r in results:
-        if r["decision"] == "Exclude":
+        if r.get("title_decision") == "Exclude":
             reason = categorise_exclusion(r.get("rationale", ""))
-            exclusion_reasons[reason] = exclusion_reasons.get(reason, 0) + 1
+            exclusion_reasons_s1[reason] = exclusion_reasons_s1.get(reason, 0) + 1
+        if r.get("abstract_decision") == "Exclude":
+            reason = categorise_exclusion(r.get("rationale", ""))
+            exclusion_reasons_s2[reason] = exclusion_reasons_s2.get(reason, 0) + 1
+        if r.get("fulltext_decision") == "Exclude":
+            reason = categorise_exclusion(r.get("rationale", ""))
+            exclusion_reasons_s3[reason] = exclusion_reasons_s3.get(reason, 0) + 1
 
-    # Final corpus
+    # Fallback: legacy single-stage (if stages weren't used)
+    n_pending = sum(1 for r in results if r.get("decision", "Pending") == "Pending")
+    n_excluded_legacy = sum(1 for r in results if r.get("decision") == "Exclude")
+    n_included_legacy = sum(1 for r in results if r.get("decision") == "Include")
+    n_maybe_legacy = sum(1 for r in results if r.get("decision") == "Maybe")
+    exclusion_reasons_legacy = {}
+    for r in results:
+        if r.get("decision") == "Exclude":
+            reason = categorise_exclusion(r.get("rationale", ""))
+            exclusion_reasons_legacy[reason] = exclusion_reasons_legacy.get(reason, 0) + 1
+
     n_corpus = len(corpus)
 
     return {
         "by_db": by_db,
         "n_after_dedup": n_after_dedup,
-        "n_screened": n_screened,
-        "n_pending": n_pending,
-        "n_excluded_screening": n_excluded_screening,
-        "n_maybe": n_maybe,
-        "n_included_screening": n_included_screening,
+        # Stage 1
+        "n_s1_screened": n_s1_screened,
+        "n_s1_excluded": n_s1_excluded,
+        "n_s1_included": n_s1_included,
+        "n_s1_maybe": n_s1_maybe,
+        "exclusion_reasons_s1": exclusion_reasons_s1,
+        # Stage 2
+        "n_s2_screened": n_s2_screened,
+        "n_s2_excluded": n_s2_excluded,
+        "n_s2_included": n_s2_included,
+        "n_s2_maybe": n_s2_maybe,
+        "exclusion_reasons_s2": exclusion_reasons_s2,
+        # Stage 3
+        "n_s3_screened": n_s3_screened,
+        "n_s3_excluded": n_s3_excluded,
+        "n_s3_included": n_s3_included,
+        "exclusion_reasons_s3": exclusion_reasons_s3,
+        # Final
         "n_corpus": n_corpus,
-        "exclusion_reasons": exclusion_reasons,
+        # Legacy compatibility for older code paths
+        "n_screened": n_s1_screened or (n_after_dedup - n_pending),
+        "n_pending": n_pending,
+        "n_excluded_screening": n_excluded_legacy if n_s1_excluded == 0 else (n_s1_excluded + n_s2_excluded + n_s3_excluded),
+        "n_maybe": n_s1_maybe + n_s2_maybe if n_s1_maybe + n_s2_maybe > 0 else n_maybe_legacy,
+        "n_included_screening": n_included_legacy if n_s3_included == 0 else n_s3_included,
+        "exclusion_reasons": exclusion_reasons_legacy if not any([exclusion_reasons_s1, exclusion_reasons_s2, exclusion_reasons_s3])
+                             else {k: exclusion_reasons_s1.get(k, 0) + exclusion_reasons_s2.get(k, 0) + exclusion_reasons_s3.get(k, 0)
+                                   for k in set(list(exclusion_reasons_s1) + list(exclusion_reasons_s2) + list(exclusion_reasons_s3))},
     }
 
 
-def build_prisma_flowchart(prisma):
-    """Build a PRISMA-ScR style Mermaid flowchart.
+def _format_reasons(reasons_dict, max_show=4):
+    """Format exclusion reasons as a bulleted block for Mermaid node text."""
+    if not reasons_dict:
+        return "(no exclusions yet)"
+    sorted_r = sorted(reasons_dict.items(), key=lambda x: -x[1])
+    lines = []
+    for reason, count in sorted_r[:max_show]:
+        safe = reason.replace("|", "/").replace('"', "'")[:50]
+        lines.append(f"• {safe}: n={count}")
+    if len(sorted_r) > max_show:
+        other = sum(c for _, c in sorted_r[max_show:])
+        lines.append(f"• Other: n={other}")
+    return "<br/>".join(lines)
 
-    Layout (top to bottom):
-      Identification: Records from each database
-      Deduplication: Records after duplicates removed
-      Screening: Records screened → Records excluded (with reason breakdown)
-      Eligibility: Records assessed for eligibility → Records uncertain (Maybe)
-      Included: Studies in final corpus
-    """
+
+def build_prisma_flowchart(prisma):
+    """Build a PRISMA-ScR style Mermaid flowchart with all 3 screening stages."""
     if not prisma:
         return "flowchart TD\n    A[No data yet]"
 
     # Identification block — one node per database
     db_lines = []
-    db_total = 0
     for i, (db, n) in enumerate(sorted(prisma["by_db"].items(), key=lambda x: -x[1])):
         db_lines.append(f'    DB{i}["{db}<br/>n = {n:,}"]:::ident')
-        db_total += n
-
     db_to_dedup = "\n".join([f"    DB{i} --> Dedup" for i in range(len(prisma["by_db"]))])
 
-    # Exclusion reason node — list reasons with counts
-    exclusion_lines = []
-    if prisma["exclusion_reasons"]:
-        sorted_reasons = sorted(prisma["exclusion_reasons"].items(), key=lambda x: -x[1])
-        for reason, count in sorted_reasons[:6]:  # top 6 to keep diagram readable
-            # Mermaid node text — escape pipes and quotes
-            safe_reason = reason.replace("|", "/").replace('"', "'")
-            exclusion_lines.append(f"• {safe_reason}: n = {count}")
-        if len(sorted_reasons) > 6:
-            other = sum(c for _, c in sorted_reasons[6:])
-            exclusion_lines.append(f"• Other: n = {other}")
-    exclusion_text = "<br/>".join(exclusion_lines) if exclusion_lines else "(reasons not categorised)"
+    # Determine if we're using staged or legacy mode
+    used_stages = prisma["n_s1_screened"] > 0 or prisma["n_s2_screened"] > 0 or prisma["n_s3_screened"] > 0
 
-    # Build diagram
-    chart = f"""flowchart TD
+    if used_stages:
+        # Build 3-stage flowchart
+        excl_s1 = _format_reasons(prisma["exclusion_reasons_s1"])
+        excl_s2 = _format_reasons(prisma["exclusion_reasons_s2"])
+        excl_s3 = _format_reasons(prisma["exclusion_reasons_s3"])
+
+        chart = f"""flowchart TD
+    subgraph IDENT [" Identification "]
+{chr(10).join(db_lines)}
+    end
+
+    Dedup["Records after duplicates removed<br/>n = {prisma['n_after_dedup']:,}"]:::stage
+
+    S1Screened["Stage 1: Title screening<br/>n screened = {prisma['n_s1_screened']:,}"]:::stage
+    S1Excluded["Excluded at title stage<br/>n = {prisma['n_s1_excluded']:,}<br/><br/>Reasons:<br/>{excl_s1}"]:::excluded
+    S1Maybe["Stage 1 Maybe<br/>n = {prisma['n_s1_maybe']:,}<br/>(reviewed at Stage 2)"]:::maybe
+
+    S2Screened["Stage 2: Abstract + journal quality<br/>n screened = {prisma['n_s2_screened']:,}"]:::stage
+    S2Excluded["Excluded at abstract stage<br/>n = {prisma['n_s2_excluded']:,}<br/><br/>Reasons:<br/>{excl_s2}"]:::excluded
+    S2Maybe["Stage 2 Maybe<br/>n = {prisma['n_s2_maybe']:,}"]:::maybe
+
+    S3Screened["Stage 3: Full-text + critical appraisal<br/>n assessed = {prisma['n_s3_screened']:,}"]:::stage
+    S3Excluded["Excluded at full-text stage<br/>n = {prisma['n_s3_excluded']:,}<br/><br/>Reasons (incl. appraisal):<br/>{excl_s3}"]:::excluded
+
+    Included["Studies included in synthesis<br/>n = {prisma['n_corpus']:,}"]:::included
+
+{db_to_dedup}
+    Dedup --> S1Screened
+    S1Screened --> S1Excluded
+    S1Screened --> S1Maybe
+    S1Screened --> S2Screened
+    S1Maybe --> S2Screened
+    S2Screened --> S2Excluded
+    S2Screened --> S2Maybe
+    S2Screened --> S3Screened
+    S3Screened --> S3Excluded
+    S3Screened --> Included
+
+    classDef ident fill:#E6F1FB,stroke:#185FA5,color:#0C447C
+    classDef stage fill:#F1EFE8,stroke:#5F5E5A,color:#2C2C2A
+    classDef excluded fill:#FAECE7,stroke:#993C1D,color:#712B13
+    classDef maybe fill:#FFF8DC,stroke:#8B7500,color:#5C4D00
+    classDef included fill:#E1F5EE,stroke:#0F6E56,color:#085041
+"""
+    else:
+        # Legacy single-stage flowchart (backward compat)
+        excl = _format_reasons(prisma["exclusion_reasons"])
+        chart = f"""flowchart TD
     subgraph IDENT [" Identification "]
 {chr(10).join(db_lines)}
     end
@@ -1147,11 +1785,11 @@ def build_prisma_flowchart(prisma):
 
     Screened["Records screened<br/>n = {prisma['n_screened']:,}"]:::stage
 
-    Excluded["Records excluded at screening<br/>n = {prisma['n_excluded_screening']:,}<br/><br/>Reasons:<br/>{exclusion_text}"]:::excluded
+    Excluded["Records excluded at screening<br/>n = {prisma['n_excluded_screening']:,}<br/><br/>Reasons:<br/>{excl}"]:::excluded
 
     Eligible["Records assessed for eligibility<br/>n = {prisma['n_included_screening'] + prisma['n_maybe']:,}"]:::stage
 
-    Uncertain["Records uncertain / Maybe<br/>n = {prisma['n_maybe']:,}<br/>(deferred for full-text review)"]:::excluded
+    Uncertain["Records uncertain / Maybe<br/>n = {prisma['n_maybe']:,}"]:::excluded
 
     Included["Studies included in synthesis<br/>n = {prisma['n_corpus']:,}"]:::included
 
@@ -1171,8 +1809,7 @@ def build_prisma_flowchart(prisma):
 
 
 def build_mermaid_flowchart(stats, config):
-    """Legacy conceptual flowchart — kept for backward compatibility.
-    The synthesis tab now uses build_prisma_flowchart instead."""
+    """Legacy conceptual flowchart — kept for backward compatibility."""
     topic = config["research_topic"][:60]
     top_tiers = sorted(
         [(t, c) for t, c in stats["tier_counts"].items() if c > 0],
@@ -1758,6 +2395,60 @@ def build_word_document(corpus, stats, narrative, prisma, config):
                             run.font.size = Pt(11)
                 section_idx += 1
 
+    # ─── Critical Appraisal Summary (if appraisals have been run) ───
+    appraisals = st.session_state.get("appraisals", {})
+    corpus_appraisals = {c["id"]: appraisals[c["id"]] for c in corpus if c["id"] in appraisals}
+    if corpus_appraisals:
+        doc.add_page_break()
+        doc.add_heading("Critical Appraisal Summary", level=1)
+        # Summary table
+        table = doc.add_table(rows=1, cols=4)
+        table.style = 'Light Grid Accent 1'
+        hdr = table.rows[0].cells
+        hdr[0].text = "Study"
+        hdr[1].text = "Appraisal tool"
+        hdr[2].text = "Overall rating"
+        hdr[3].text = "Recommendation"
+        for cell in hdr:
+            for r in cell.paragraphs[0].runs:
+                r.bold = True
+        for c in corpus:
+            ap = corpus_appraisals.get(c["id"])
+            if ap:
+                row = table.add_row().cells
+                row[0].text = f"{(c.get('authors') or '').split(',')[0].strip()} ({c.get('year','')})"
+                row[1].text = ap.get("tool", "")
+                row[2].text = ap.get("overall_rating", "")
+                row[3].text = ap.get("recommendation", "")
+
+    # ─── References (Manchester-Harvard) ───
+    refs = build_reference_list(corpus)
+    if refs:
+        doc.add_page_break()
+        doc.add_heading("References", level=1)
+        meta = doc.add_paragraph()
+        meta_run = meta.add_run("Formatted in Manchester-Harvard style.")
+        meta_run.italic = True
+        meta_run.font.size = Pt(10)
+        meta_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+
+        for ref in refs:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.left_indent = Cm(1.0)
+            p.paragraph_format.first_line_indent = Cm(-1.0)  # hanging indent
+            # Render with italics for journal title (delimited by *...* in our format)
+            import re as _re
+            parts = _re.split(r"(\*[^*]+\*)", ref)
+            for part in parts:
+                if part.startswith("*") and part.endswith("*") and len(part) > 2:
+                    run = p.add_run(part[1:-1])
+                    run.italic = True
+                else:
+                    p.add_run(part)
+            for run in p.runs:
+                run.font.size = Pt(11)
+
     # Save to BytesIO
     bio = BytesIO()
     doc.save(bio)
@@ -1789,6 +2480,42 @@ Database: {article['db']}"""
     if article.get("abstract"):
         user_msg += f"\nAbstract: {article['abstract'][:800]}"
     text, err = call_claude(build_screen_system_prompt(), user_msg)
+    if err:
+        return None, err
+    try:
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        return json.loads(cleaned), None
+    except Exception as e:
+        return None, f"Parse error: {e}\nRaw: {text[:200]}"
+
+
+def build_title_screen_prompt():
+    """Title-only screening prompt — fast triage, errs on the side of inclusion (Maybe)."""
+    c = st.session_state.config
+    return f"""You are conducting Stage 1 (title-only) screening for a scoping review on: {c['research_topic']}.
+
+Theoretical anchor: {c['theoretical_anchor']}
+
+Stage 1 is a FAST triage based ONLY on the title. The goal is to remove records that are CLEARLY irrelevant (different topic, wrong field, wrong species, off-topic), while erring on the side of inclusion when uncertain. Detailed criteria are checked at Stage 2 with the abstract.
+
+Decision rules:
+- "Include": Title clearly indicates relevance to the research topic.
+- "Maybe": Title is ambiguous OR cannot be confidently judged from title alone — DEFAULT for uncertainty.
+- "Exclude": Title clearly indicates the record is off-topic (different field, different population, different concept).
+
+Respond ONLY as valid JSON:
+{{
+  "decision": "Include|Maybe|Exclude",
+  "rationale": "1-line reason based on title only",
+  "confidence": "high|medium|low"
+}}"""
+
+
+def screen_article_title_only(article):
+    """Stage 1: title-only screening. Fast, conservative — errs toward Maybe."""
+    user_msg = f"""Title: {article['title']}
+Journal: {article['journal']} ({article['year']})"""
+    text, err = call_claude(build_title_screen_prompt(), user_msg, max_tokens=300)
     if err:
         return None, err
     try:
@@ -1932,6 +2659,19 @@ with st.sidebar:
         else:
             st.warning("No style sample set — synthesis will use a generic academic voice.")
 
+    with st.expander("🔑 API keys (optional)", expanded=False):
+        st.caption("Add credentials for paid databases. Keys are stored only in this session and never logged.")
+        st.session_state.elsevier_key = st.text_input(
+            "Elsevier API key",
+            value=st.session_state.get("elsevier_key", ""),
+            type="password",
+            help="Get a free key at https://dev.elsevier.com. Required for Scopus. EMBASE additionally requires institutional subscription.",
+        )
+        if st.session_state.elsevier_key:
+            st.caption(f"✓ Key loaded ({len(st.session_state.elsevier_key)} chars)")
+        else:
+            st.caption("Scopus and EMBASE will be skipped at search time.")
+
     st.divider()
     if st.button("Reset to defaults"):
         st.session_state.config = DEFAULT_CONFIG.copy()
@@ -2016,7 +2756,7 @@ with tab_search:
     if preview_btn and query.strip():
         with st.spinner("Checking counts across databases..."):
             counts = {}
-            for db in ["PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC"]:
+            for db in ["PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC", "Scopus", "EMBASE"]:
                 if db == "PubMed":
                     n, e = pubmed_count_only(query, date_from, date_to)
                 elif db == "Europe PMC":
@@ -2027,20 +2767,24 @@ with tab_search:
                     n, e = semanticscholar_count_only(query, date_from, date_to)
                 elif db == "Crossref":
                     n, e = crossref_count_only(query, date_from, date_to)
-                else:  # ERIC
+                elif db == "ERIC":
                     n, e = eric_count_only(query, date_from, date_to)
+                elif db == "Scopus":
+                    n, e = scopus_count_only(query, date_from, date_to)
+                else:  # EMBASE
+                    n, e = embase_count_only(query, date_from, date_to)
                 counts[db] = (n, e)
 
-        # Render the count summary prominently — 2 rows of 3
+        # Render the count summary prominently — grid of 4 wide
         st.markdown("**Preview counts** (TOTAL matches before any retrieval cap):")
         db_list = list(counts.items())
-        row1 = st.columns(3)
-        row2 = st.columns(3)
-        for col, (db, (n, e)) in zip(row1 + row2, db_list):
+        rows = [st.columns(4), st.columns(4)]
+        for i, (db, (n, e)) in enumerate(db_list):
+            col = rows[i // 4][i % 4]
             with col:
                 if e:
-                    st.metric(db, "error")
-                    st.caption(f"⚠️ {e[:80]}")
+                    st.metric(db, "—")
+                    st.caption(f"⚠️ {e[:60]}")
                 else:
                     st.metric(db, f"{n:,}")
                     if n < 30:
@@ -2055,15 +2799,17 @@ with tab_search:
 
     selected_dbs = st.multiselect(
         "Databases to search",
-        ["PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC"],
+        ["PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC", "Scopus", "EMBASE"],
         default=["PubMed", "Europe PMC", "OpenAlex"],
         help=(
             "**PubMed**: biomedical core, MEDLINE-indexed. "
-            "**Europe PMC**: PubMed + Europe-specific + preprints (bioRxiv/medRxiv). "
-            "**OpenAlex**: ~250M scholarly works, broad coverage. "
-            "**Semantic Scholar**: AI-enhanced semantic search, strong CS/AI coverage. "
-            "**Crossref**: every DOI-registered journal article (catches journals not in PubMed). "
-            "**ERIC**: education research — highly relevant for dental education, accreditation, curriculum studies."
+            "**Europe PMC**: PubMed + Europe-specific + preprints. "
+            "**OpenAlex**: 250M+ scholarly works, broad coverage. "
+            "**Semantic Scholar**: AI-enhanced semantic search. "
+            "**Crossref**: every DOI-registered journal article. "
+            "**ERIC**: education research — relevant for accreditation, curriculum. "
+            "**Scopus**: requires Elsevier API key (free tier available). "
+            "**EMBASE**: requires PAID Elsevier subscription + API key."
         ),
     )
 
@@ -2117,9 +2863,29 @@ with tab_search:
             status_lines.append(f"ERIC: {len(items)} of {total:,} total")
             progress_value += step
 
+        if "Scopus" in selected_dbs:
+            progress.progress(min(progress_value + 5, 99), text="Querying Scopus...")
+            items, total = search_scopus(query, date_from, date_to, max_per_db)
+            all_results.extend(items)
+            status_lines.append(f"Scopus: {len(items)} of {total:,} total")
+            progress_value += step
+
+        if "EMBASE" in selected_dbs:
+            progress.progress(min(progress_value + 5, 99), text="Querying EMBASE...")
+            items, total = search_embase(query, date_from, date_to, max_per_db)
+            all_results.extend(items)
+            status_lines.append(f"EMBASE: {len(items)} of {total:,} total")
+            progress_value += step
+
         deduped = dedup_results(all_results)
+        # Initialize stage tracking — all records start at stage 0 (post-dedup, awaiting title screen)
         for i, r in enumerate(deduped):
             r["num"] = i + 1
+            r.setdefault("stage", 0)  # 0 = post-dedup, 1 = title-screened, 2 = abstract-screened, 3 = full-text/appraisal-screened
+            r.setdefault("title_decision", "Pending")
+            r.setdefault("abstract_decision", "Pending")
+            r.setdefault("fulltext_decision", "Pending")
+            r.setdefault("journal_quality", None)
         st.session_state.results = deduped
         st.session_state.search_status = f"**{len(deduped)} unique results** after deduplication"
         st.session_state.db_status = status_lines
@@ -2171,130 +2937,264 @@ with tab_search:
 
 # ─── SCREEN TAB ────────────────────────────────────────────────
 with tab_screen:
-    st.subheader("Screening")
+    st.subheader("Staged Screening (PRISMA-ScR)")
+    st.caption("Records progress through three stages: **Stage 1 (Title)** → **Stage 2 (Abstract + Journal Quality)** → **Stage 3 (Full-text + Critical Appraisal)**. Only studies passing each stage advance to the next. Final corpus = Stage 3 includes.")
 
     if not st.session_state.results:
         st.info("Run a search first.")
     else:
-        # Filters
-        fc1, fc2, fc3, fc4 = st.columns([1, 1, 2, 2])
-        with fc1:
-            filter_dec = st.selectbox("Decision filter", ["All", "Pending", "Include", "Maybe", "Exclude"], key="filter_dec")
-        with fc2:
-            filter_db = st.selectbox("Database filter", ["All", "PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC"], key="filter_db")
-        with fc3:
-            n_pending = sum(1 for r in st.session_state.results if r["decision"] == "Pending")
-            if st.button(f"🤖 AI screen all pending ({n_pending})", type="primary", disabled=not client or n_pending == 0):
+        # ─── PRISMA-style stage counters ───
+        n_total = len(st.session_state.results)
+        n_s1_inc = sum(1 for r in st.session_state.results if r.get("title_decision") == "Include")
+        n_s1_exc = sum(1 for r in st.session_state.results if r.get("title_decision") == "Exclude")
+        n_s1_pen = sum(1 for r in st.session_state.results if r.get("title_decision", "Pending") == "Pending")
+        n_s2_inc = sum(1 for r in st.session_state.results if r.get("abstract_decision") == "Include")
+        n_s2_exc = sum(1 for r in st.session_state.results if r.get("abstract_decision") == "Exclude")
+        n_s2_pen = sum(1 for r in st.session_state.results if r.get("title_decision") == "Include" and r.get("abstract_decision", "Pending") == "Pending")
+        n_s3_inc = sum(1 for r in st.session_state.results if r.get("fulltext_decision") == "Include")
+        n_s3_exc = sum(1 for r in st.session_state.results if r.get("fulltext_decision") == "Exclude")
+        n_s3_pen = sum(1 for r in st.session_state.results if r.get("abstract_decision") == "Include" and r.get("fulltext_decision", "Pending") == "Pending")
+
+        progress_cols = st.columns(4)
+        progress_cols[0].metric("After dedup", n_total)
+        progress_cols[1].metric("Stage 1 included", n_s1_inc, delta=f"-{n_s1_exc} excluded")
+        progress_cols[2].metric("Stage 2 included", n_s2_inc, delta=f"-{n_s2_exc} excluded")
+        progress_cols[3].metric("Stage 3 included", n_s3_inc, delta=f"-{n_s3_exc} excluded")
+
+        st.divider()
+
+        # ─── Choose stage to work in ───
+        stage_choice = st.radio(
+            "Active stage",
+            ["Stage 1 – Title screening", "Stage 2 – Abstract screening", "Stage 3 – Full-text + Critical Appraisal"],
+            horizontal=True,
+            key="active_stage",
+        )
+
+        if "Stage 1" in stage_choice:
+            stage_num = 1
+            field = "title_decision"
+            queue = [r for r in st.session_state.results if r.get("title_decision", "Pending") == "Pending"]
+            other_field_filter = lambda r: True  # all records eligible
+        elif "Stage 2" in stage_choice:
+            stage_num = 2
+            field = "abstract_decision"
+            queue = [r for r in st.session_state.results
+                     if r.get("title_decision") == "Include" and r.get("abstract_decision", "Pending") == "Pending"]
+            other_field_filter = lambda r: r.get("title_decision") == "Include"
+        else:
+            stage_num = 3
+            field = "fulltext_decision"
+            queue = [r for r in st.session_state.results
+                     if r.get("abstract_decision") == "Include" and r.get("fulltext_decision", "Pending") == "Pending"]
+            other_field_filter = lambda r: r.get("abstract_decision") == "Include"
+
+        st.caption(f"**{len(queue)} records pending in this stage.**")
+
+        # ─── Bulk AI actions per stage ───
+        bulk_cols = st.columns([2, 2, 2])
+        with bulk_cols[0]:
+            if stage_num == 1:
+                btn_label = f"🤖 AI title-screen all pending ({len(queue)})"
+            elif stage_num == 2:
+                btn_label = f"🤖 AI abstract-screen all pending ({len(queue)})"
+            else:
+                btn_label = f"🤖 Appraise all pending ({len(queue)})"
+
+            if st.button(btn_label, type="primary", disabled=not client or len(queue) == 0):
                 if client:
-                    progress = st.progress(0, text="Starting AI screening...")
-                    pending = [r for r in st.session_state.results if r["decision"] == "Pending"]
-                    for i, art in enumerate(pending):
-                        progress.progress((i + 1) / len(pending), text=f"Screening {i+1}/{len(pending)}: {art['title'][:60]}...")
-                        result, err = screen_article(art)
+                    progress = st.progress(0, text="Starting...")
+                    for i, art in enumerate(queue):
+                        progress.progress((i + 1) / len(queue), text=f"{i+1}/{len(queue)}: {art['title'][:50]}...")
+                        if stage_num == 1:
+                            # Title-only screen: quick triage
+                            result, err = screen_article_title_only(art)
+                        elif stage_num == 2:
+                            # Abstract screen + journal quality
+                            result, err = screen_article(art)
+                            if result:
+                                jq = check_journal_quality(art.get("journal", ""))
+                                for rr in st.session_state.results:
+                                    if rr["id"] == art["id"]:
+                                        rr["journal_quality"] = jq
+                                        # Auto-exclude if predatory
+                                        if jq["flag"] == "critical":
+                                            result["decision"] = "Exclude"
+                                            result["rationale"] = (result.get("rationale", "") + f" | Journal quality: {jq['reason']}").strip(" |")
+                                        break
+                        else:
+                            # Stage 3: Critical appraisal
+                            result, err = appraise_study(art)
+                            if result:
+                                # Store full appraisal
+                                st.session_state.appraisals[art["id"]] = result
+                                decision = result.get("recommendation", "Maybe")
+                                rationale = f"{result.get('overall_rating','')} quality — {result.get('rationale','')}"
+                                result = {"decision": decision, "rationale": rationale, "confidence": "high"}
+
                         if result:
-                            for r in st.session_state.results:
-                                if r["id"] == art["id"]:
-                                    r["decision"] = result.get("decision", "Maybe")
-                                    r["tier"] = result.get("tier", "")
-                                    r["kp"] = result.get("kp", "N/A")
-                                    r["rationale"] = result.get("rationale", "")
-                                    r["confidence"] = result.get("confidence", "")
+                            for rr in st.session_state.results:
+                                if rr["id"] == art["id"]:
+                                    rr[field] = result.get("decision", "Maybe")
+                                    rr["rationale"] = result.get("rationale", "")
+                                    rr["confidence"] = result.get("confidence", "")
+                                    rr["decision"] = result.get("decision", "Maybe")  # keep main decision in sync
+                                    if stage_num == 1:
+                                        # Tier/KP at title stage are tentative
+                                        rr["tier"] = result.get("tier", rr.get("tier", ""))
+                                    if stage_num == 2:
+                                        rr["tier"] = result.get("tier", rr.get("tier", ""))
+                                        rr["kp"] = result.get("kp", rr.get("kp", "N/A"))
+                                    rr["stage"] = stage_num
                                     break
                         else:
-                            for r in st.session_state.results:
-                                if r["id"] == art["id"]:
-                                    r["decision"] = "Maybe"
-                                    r["rationale"] = f"AI error: {err}"
+                            for rr in st.session_state.results:
+                                if rr["id"] == art["id"]:
+                                    rr[field] = "Maybe"
+                                    rr["rationale"] = f"AI error: {err}"
                                     break
                         time.sleep(0.4)
                     progress.empty()
-                    st.success(f"Screened {len(pending)} articles.")
+                    st.success(f"Stage {stage_num} screening complete.")
                     st.rerun()
-        with fc4:
-            if st.button(f"➕ Add all Includes to corpus", type="secondary"):
+        with bulk_cols[1]:
+            if stage_num == 3 and st.button("➕ Add Stage 3 includes to corpus", type="secondary"):
                 existing = {c["id"] for c in st.session_state.corpus}
                 added = 0
                 for r in st.session_state.results:
-                    if r["decision"] == "Include" and r["id"] not in existing:
+                    if r.get("fulltext_decision") == "Include" and r["id"] not in existing:
                         st.session_state.corpus.append(dict(r))
                         added += 1
-                st.success(f"Added {added} studies to corpus.")
+                st.success(f"Added {added} studies to the final corpus.")
                 st.rerun()
+        with bulk_cols[2]:
+            filter_db = st.selectbox(
+                "Database filter",
+                ["All", "PubMed", "Europe PMC", "OpenAlex", "Semantic Scholar", "Crossref", "ERIC", "Scopus", "EMBASE"],
+                key="filter_db_stage",
+            )
 
-        # Apply filters
-        filtered = st.session_state.results
-        if filter_dec != "All":
-            filtered = [r for r in filtered if r["decision"] == filter_dec]
+        st.divider()
+
+        # ─── Records list — only show records eligible for current stage ───
+        records_in_stage = [r for r in st.session_state.results if other_field_filter(r)]
         if filter_db != "All":
-            filtered = [r for r in filtered if r["db"] == filter_db]
+            records_in_stage = [r for r in records_in_stage if r["db"] == filter_db]
 
-        st.caption(f"Showing {len(filtered)} of {len(st.session_state.results)} results")
+        # Decision filter for current stage
+        filter_dec = st.selectbox(
+            f"Stage {stage_num} decision filter",
+            ["All", "Pending", "Include", "Maybe", "Exclude"],
+            key=f"filter_dec_s{stage_num}",
+        )
+        if filter_dec != "All":
+            records_in_stage = [r for r in records_in_stage if r.get(field, "Pending") == filter_dec]
 
-        for r in filtered:
+        st.caption(f"Showing {len(records_in_stage)} records at Stage {stage_num}")
+
+        for r in records_in_stage:
+            current_decision = r.get(field, "Pending")
             with st.container(border=True):
                 col_main, col_btns = st.columns([5, 2])
                 with col_main:
-                    st.markdown(f"**#{r['num']}** · [{r['title']}]({r['url']})")
+                    st.markdown(f"**#{r['num']}** · [{r['title']}]({r.get('url','')})")
                     st.caption(f"{r['authors']} · *{r['journal']}* {r['year']} · {r['db']}")
+                    # Journal quality indicator (Stage 2 and later)
+                    if stage_num >= 2 and r.get("journal_quality"):
+                        jq = r["journal_quality"]
+                        emoji = {"good": "🟢", "warning": "🟡", "critical": "🔴"}.get(jq["flag"], "")
+                        st.caption(f"{emoji} **Journal quality:** {jq['reason']}")
                 with col_btns:
                     dec_cols = st.columns(3)
                     for j, d in enumerate(["Include", "Maybe", "Exclude"]):
                         with dec_cols[j]:
-                            current = r["decision"] == d
-                            if st.button(d, key=f"dec_{r['id']}_{d}", type="primary" if current else "secondary", use_container_width=True):
+                            current = current_decision == d
+                            if st.button(d, key=f"dec_s{stage_num}_{r['id']}_{d}", type="primary" if current else "secondary", use_container_width=True):
                                 for rr in st.session_state.results:
                                     if rr["id"] == r["id"]:
+                                        rr[field] = d
                                         rr["decision"] = d
+                                        rr["stage"] = stage_num
                                         break
                                 st.rerun()
 
-                # Tier & Kirkpatrick row
-                tk_cols = st.columns([3, 3, 2, 2])
-                with tk_cols[0]:
-                    tier_opts = [""] + st.session_state.config["tiers"]
-                    current_tier_idx = tier_opts.index(r["tier"]) if r["tier"] in tier_opts else 0
-                    new_tier = st.selectbox("Tier", tier_opts, index=current_tier_idx, key=f"tier_{r['id']}", label_visibility="collapsed")
-                    if new_tier != r["tier"]:
-                        for rr in st.session_state.results:
-                            if rr["id"] == r["id"]:
-                                rr["tier"] = new_tier
-                                break
-                with tk_cols[1]:
-                    kp_opts = st.session_state.config["kp_levels"]
-                    current_kp_idx = kp_opts.index(r["kp"]) if r["kp"] in kp_opts else 0
-                    new_kp = st.selectbox("KP", kp_opts, index=current_kp_idx, key=f"kp_{r['id']}", label_visibility="collapsed")
-                    if new_kp != r["kp"]:
-                        for rr in st.session_state.results:
-                            if rr["id"] == r["id"]:
-                                rr["kp"] = new_kp
-                                break
-                with tk_cols[2]:
-                    if st.button("🤖 AI screen", key=f"aiscr_{r['id']}", disabled=not client, use_container_width=True):
-                        with st.spinner("Screening..."):
-                            result, err = screen_article(r)
-                            if result:
-                                for rr in st.session_state.results:
-                                    if rr["id"] == r["id"]:
-                                        rr["decision"] = result.get("decision", "Maybe")
-                                        rr["tier"] = result.get("tier", "")
-                                        rr["kp"] = result.get("kp", "N/A")
-                                        rr["rationale"] = result.get("rationale", "")
-                                        rr["confidence"] = result.get("confidence", "")
-                                        break
+                # Tier & Kirkpatrick (only at Stage 2+, when we know more)
+                if stage_num >= 2:
+                    tk_cols = st.columns([3, 3, 2, 2])
+                    with tk_cols[0]:
+                        tier_opts = [""] + st.session_state.config["tiers"]
+                        current_tier_idx = tier_opts.index(r.get("tier", "")) if r.get("tier", "") in tier_opts else 0
+                        new_tier = st.selectbox("Tier", tier_opts, index=current_tier_idx, key=f"tier_s{stage_num}_{r['id']}", label_visibility="collapsed")
+                        if new_tier != r.get("tier", ""):
+                            for rr in st.session_state.results:
+                                if rr["id"] == r["id"]:
+                                    rr["tier"] = new_tier
+                                    break
+                    with tk_cols[1]:
+                        kp_opts = st.session_state.config["kp_levels"]
+                        current_kp_idx = kp_opts.index(r.get("kp", "N/A")) if r.get("kp", "N/A") in kp_opts else 0
+                        new_kp = st.selectbox("KP", kp_opts, index=current_kp_idx, key=f"kp_s{stage_num}_{r['id']}", label_visibility="collapsed")
+                        if new_kp != r.get("kp", "N/A"):
+                            for rr in st.session_state.results:
+                                if rr["id"] == r["id"]:
+                                    rr["kp"] = new_kp
+                                    break
+                    with tk_cols[2]:
+                        if st.button("🤖 AI", key=f"aiscr_s{stage_num}_{r['id']}", disabled=not client, use_container_width=True):
+                            with st.spinner("Working..."):
+                                if stage_num == 2:
+                                    result, err = screen_article(r)
+                                    jq = check_journal_quality(r.get("journal", ""))
+                                    for rr in st.session_state.results:
+                                        if rr["id"] == r["id"]:
+                                            rr["journal_quality"] = jq
+                                            break
+                                elif stage_num == 3:
+                                    ap, err = appraise_study(r)
+                                    if ap:
+                                        st.session_state.appraisals[r["id"]] = ap
+                                        result = {"decision": ap.get("recommendation", "Maybe"),
+                                                  "rationale": f"{ap.get('overall_rating','')} quality — {ap.get('rationale','')}",
+                                                  "confidence": "high"}
+                                    else:
+                                        result = None
+                                if result:
+                                    for rr in st.session_state.results:
+                                        if rr["id"] == r["id"]:
+                                            rr[field] = result.get("decision", "Maybe")
+                                            rr["decision"] = result.get("decision", "Maybe")
+                                            rr["rationale"] = result.get("rationale", "")
+                                            rr["confidence"] = result.get("confidence", "")
+                                            rr["stage"] = stage_num
+                                            break
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error: {err}")
+                    with tk_cols[3]:
+                        if stage_num == 3 and current_decision == "Include":
+                            if st.button("➕ Corpus", key=f"corp_s{stage_num}_{r['id']}", use_container_width=True):
+                                if not any(c["id"] == r["id"] for c in st.session_state.corpus):
+                                    st.session_state.corpus.append(dict(r))
                                 st.rerun()
-                            else:
-                                st.error(f"Error: {err}")
-                with tk_cols[3]:
-                    if r["decision"] == "Include":
-                        if st.button("➕ Corpus", key=f"corp_{r['id']}", use_container_width=True):
-                            if not any(c["id"] == r["id"] for c in st.session_state.corpus):
-                                st.session_state.corpus.append(dict(r))
-                            st.success("Added")
-                            st.rerun()
 
-                if r["rationale"]:
+                # Rationale
+                if r.get("rationale"):
                     conf_emoji = {"high": "🟢", "medium": "🟡", "low": "🔴"}.get(r.get("confidence", ""), "")
                     st.caption(f"*{conf_emoji} {r['rationale']}*")
+
+                # Show appraisal details if available (Stage 3)
+                if stage_num == 3 and r["id"] in st.session_state.appraisals:
+                    ap = st.session_state.appraisals[r["id"]]
+                    with st.expander(f"📋 Appraisal: {ap.get('tool','')} → {ap.get('overall_rating','')}"):
+                        rating_color = {"High": "🟢", "Moderate": "🟡", "Low": "🔴"}.get(ap.get("overall_rating", ""), "")
+                        st.markdown(f"**Overall:** {rating_color} {ap.get('overall_rating','')} — {ap.get('rationale','')}")
+                        st.markdown(f"**Recommendation:** {ap.get('recommendation','')}")
+                        if ap.get("exclusion_reason"):
+                            st.warning(f"Exclusion reason: {ap['exclusion_reason']}")
+                        st.markdown("**Item scores:**")
+                        for s in ap.get("item_scores", []):
+                            r_emoji = {"Yes": "✅", "No": "❌", "Unclear": "❓", "NA": "—"}.get(s.get("rating", ""), "")
+                            st.markdown(f"- {r_emoji} **{s.get('rating','')}** — {s.get('item','')}: {s.get('note','')}")
 
 
 # ─── CORPUS TAB ────────────────────────────────────────────────
@@ -2555,6 +3455,15 @@ with tab_synth:
                             md_parts.append("### Geographic distribution\n" + geo_t + "\n\n")
                     if i < len(sections):
                         md_parts.append(sections[i] + "\n\n")
+
+                # ─── Manchester-Harvard References ───
+                refs = build_reference_list(st.session_state.corpus)
+                if refs:
+                    md_parts.append("## References\n")
+                    md_parts.append("_Manchester-Harvard style_\n\n")
+                    for ref in refs:
+                        md_parts.append(f"{ref}\n\n")
+
                 full_md = "".join(md_parts)
                 st.download_button(
                     "📥 Download (.md)",
