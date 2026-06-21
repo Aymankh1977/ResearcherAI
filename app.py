@@ -1906,7 +1906,7 @@ Study design distribution (from extractions):
 
     user_msg = stats_summary + "\n\nCORPUS LISTING:\n" + listing
     system_prompt = build_synth_system_prompt(use_themes=use_themes, themes=themes)
-    text, err = call_claude(system_prompt, user_msg, max_tokens=6000)
+    text, err = call_claude(system_prompt, user_msg, max_tokens=6000, use_cache=True)
 
     if err:
         return None, err
@@ -2456,15 +2456,26 @@ def build_word_document(corpus, stats, narrative, prisma, config):
     return bio
 
 
-def call_claude(system_prompt, user_message, max_tokens=1000):
+def call_claude(system_prompt, user_message, max_tokens=1000, model="claude-sonnet-4-5", use_cache=False):
+    """Call the Claude API.
+
+    use_cache=True adds cache_control to the system prompt block so repeated calls
+    with the same system prompt only charge ~10% of system-prompt tokens after the
+    first call (5-minute TTL). Use for any function that loops over many articles
+    with an identical system prompt.
+    """
     client = get_anthropic_client()
     if not client:
         return None, "No Anthropic API key configured. Add ANTHROPIC_API_KEY to Streamlit secrets or environment."
     try:
+        if use_cache:
+            system_block = [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+        else:
+            system_block = system_prompt
         msg = client.messages.create(
-            model="claude-sonnet-4-5",
+            model=model,
             max_tokens=max_tokens,
-            system=system_prompt,
+            system=system_block,
             messages=[{"role": "user", "content": user_message}],
         )
         return msg.content[0].text, None
@@ -2478,8 +2489,12 @@ Authors: {article['authors']}
 Journal: {article['journal']} ({article['year']})
 Database: {article['db']}"""
     if article.get("abstract"):
-        user_msg += f"\nAbstract: {article['abstract'][:800]}"
-    text, err = call_claude(build_screen_system_prompt(), user_msg)
+        user_msg += f"\nAbstract: {article['abstract'][:600]}"
+    # Haiku is sufficient for binary screening; cache the system prompt across calls
+    text, err = call_claude(
+        build_screen_system_prompt(), user_msg,
+        model="claude-haiku-4-5-20251001", use_cache=True,
+    )
     if err:
         return None, err
     try:
@@ -2492,30 +2507,96 @@ Database: {article['db']}"""
 def build_title_screen_prompt():
     """Title-only screening prompt — fast triage, errs on the side of inclusion (Maybe)."""
     c = st.session_state.config
-    return f"""You are conducting Stage 1 (title-only) screening for a scoping review on: {c['research_topic']}.
+    # Deliberately short: theoretical anchor and long criteria are not needed
+    # for a simple title triage that errs toward Maybe.
+    return f"""You are screening titles for a scoping review on: {c['research_topic']}.
 
-Theoretical anchor: {c['theoretical_anchor']}
-
-Stage 1 is a FAST triage based ONLY on the title. The goal is to remove records that are CLEARLY irrelevant (different topic, wrong field, wrong species, off-topic), while erring on the side of inclusion when uncertain. Detailed criteria are checked at Stage 2 with the abstract.
-
-Decision rules:
-- "Include": Title clearly indicates relevance to the research topic.
-- "Maybe": Title is ambiguous OR cannot be confidently judged from title alone — DEFAULT for uncertainty.
-- "Exclude": Title clearly indicates the record is off-topic (different field, different population, different concept).
+Stage 1 triage — decide based on title ONLY. Err toward Maybe when uncertain.
+- Include: title clearly relevant
+- Maybe: ambiguous or unclear from title alone (DEFAULT for uncertainty)
+- Exclude: title clearly off-topic (wrong field/population/concept)
 
 Respond ONLY as valid JSON:
-{{
-  "decision": "Include|Maybe|Exclude",
-  "rationale": "1-line reason based on title only",
-  "confidence": "high|medium|low"
-}}"""
+{{"decision":"Include|Maybe|Exclude","rationale":"1-line reason","confidence":"high|medium|low"}}"""
+
+
+def batch_screen_title(articles):
+    """Screen up to 20 articles in a single API call (title-only, Stage 1).
+    Returns list of result dicts parallel to the input list, or None on error."""
+    if not articles:
+        return [], None
+
+    lines = []
+    for i, a in enumerate(articles, 1):
+        lines.append(f'{i}. Title: {a["title"]} | Journal: {a.get("journal","")} ({a.get("year","")})')
+
+    user_msg = (
+        "Screen each title below. Return a JSON array with one object per record in the same order.\n"
+        "Each object: {\"decision\":\"Include|Maybe|Exclude\",\"rationale\":\"1-line\",\"confidence\":\"high|medium|low\"}\n\n"
+        + "\n".join(lines)
+        + "\n\nReturn ONLY a JSON array, no markdown."
+    )
+    text, err = call_claude(
+        build_title_screen_prompt(), user_msg,
+        max_tokens=80 * len(articles),
+        model="claude-haiku-4-5-20251001", use_cache=True,
+    )
+    if err:
+        return None, err
+    try:
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        results = json.loads(cleaned)
+        if isinstance(results, list) and len(results) == len(articles):
+            return results, None
+        return None, f"Expected {len(articles)} results, got {len(results) if isinstance(results, list) else 'non-list'}"
+    except Exception as e:
+        return None, f"Parse error: {e}\nRaw: {text[:300]}"
+
+
+def batch_screen_abstract(articles):
+    """Screen up to 10 articles in a single API call (title+abstract, Stage 2).
+    Returns list of result dicts parallel to the input list, or None on error."""
+    if not articles:
+        return [], None
+
+    lines = []
+    for i, a in enumerate(articles, 1):
+        abstract = (a.get("abstract") or "")[:400]
+        lines.append(
+            f'{i}. Title: {a["title"]} | Journal: {a.get("journal","")} ({a.get("year","")})'
+            + (f'\n   Abstract: {abstract}' if abstract else "")
+        )
+
+    user_msg = (
+        "Screen each record below for inclusion. Return a JSON array with one object per record in the same order.\n"
+        f'Each object: {{"decision":"Include|Maybe|Exclude","tier":"<tier or empty>","kp":"<KP level>","rationale":"1-sentence","confidence":"high|medium|low"}}\n\n'
+        + "\n\n".join(lines)
+        + "\n\nReturn ONLY a JSON array, no markdown."
+    )
+    text, err = call_claude(
+        build_screen_system_prompt(), user_msg,
+        max_tokens=120 * len(articles),
+        model="claude-haiku-4-5-20251001", use_cache=True,
+    )
+    if err:
+        return None, err
+    try:
+        cleaned = text.replace("```json", "").replace("```", "").strip()
+        results = json.loads(cleaned)
+        if isinstance(results, list) and len(results) == len(articles):
+            return results, None
+        return None, f"Expected {len(articles)} results, got {len(results) if isinstance(results, list) else 'non-list'}"
+    except Exception as e:
+        return None, f"Parse error: {e}\nRaw: {text[:300]}"
 
 
 def screen_article_title_only(article):
     """Stage 1: title-only screening. Fast, conservative — errs toward Maybe."""
-    user_msg = f"""Title: {article['title']}
-Journal: {article['journal']} ({article['year']})"""
-    text, err = call_claude(build_title_screen_prompt(), user_msg, max_tokens=300)
+    user_msg = f'Title: {article["title"]} | Journal: {article.get("journal","")} ({article.get("year","")})'
+    text, err = call_claude(
+        build_title_screen_prompt(), user_msg,
+        max_tokens=150, model="claude-haiku-4-5-20251001", use_cache=True,
+    )
     if err:
         return None, err
     try:
@@ -2534,8 +2615,9 @@ Tier: {article.get('tier','?')}
 Kirkpatrick: {article.get('kp','N/A')}
 Screening rationale: {article.get('rationale','')}"""
     if article.get("abstract"):
-        user_msg += f"\nAbstract: {article['abstract'][:800]}"
-    text, err = call_claude(build_extract_system_prompt(), user_msg)
+        user_msg += f"\nAbstract: {article['abstract'][:600]}"
+    # Extraction needs more nuance — keep Sonnet but cache system prompt
+    text, err = call_claude(build_extract_system_prompt(), user_msg, use_cache=True)
     if err:
         return None, err
     try:
@@ -3004,56 +3086,109 @@ with tab_screen:
             if st.button(btn_label, type="primary", disabled=not client or len(queue) == 0):
                 if client:
                     progress = st.progress(0, text="Starting...")
-                    for i, art in enumerate(queue):
-                        progress.progress((i + 1) / len(queue), text=f"{i+1}/{len(queue)}: {art['title'][:50]}...")
-                        if stage_num == 1:
-                            # Title-only screen: quick triage
-                            result, err = screen_article_title_only(art)
-                        elif stage_num == 2:
-                            # Abstract screen + journal quality
-                            result, err = screen_article(art)
-                            if result:
-                                jq = check_journal_quality(art.get("journal", ""))
-                                for rr in st.session_state.results:
-                                    if rr["id"] == art["id"]:
-                                        rr["journal_quality"] = jq
-                                        # Auto-exclude if predatory
-                                        if jq["flag"] == "critical":
-                                            result["decision"] = "Exclude"
-                                            result["rationale"] = (result.get("rationale", "") + f" | Journal quality: {jq['reason']}").strip(" |")
-                                        break
-                        else:
-                            # Stage 3: Critical appraisal
+                    # Stage 1 & 2 use batch calls (up to 20/10 articles per API call)
+                    if stage_num == 1:
+                        BATCH = 20
+                        processed = 0
+                        for batch_start in range(0, len(queue), BATCH):
+                            batch = queue[batch_start: batch_start + BATCH]
+                            progress.progress(
+                                min((batch_start + BATCH) / len(queue), 1.0),
+                                text=f"Title-screening {batch_start+1}–{min(batch_start+BATCH, len(queue))} of {len(queue)}…",
+                            )
+                            batch_results, err = batch_screen_title(batch)
+                            if batch_results:
+                                for art, result in zip(batch, batch_results):
+                                    for rr in st.session_state.results:
+                                        if rr["id"] == art["id"]:
+                                            rr[field] = result.get("decision", "Maybe")
+                                            rr["rationale"] = result.get("rationale", "")
+                                            rr["confidence"] = result.get("confidence", "")
+                                            rr["decision"] = result.get("decision", "Maybe")
+                                            rr["stage"] = stage_num
+                                            break
+                            else:
+                                # Fall back to single-article calls for this batch
+                                for art in batch:
+                                    result, serr = screen_article_title_only(art)
+                                    for rr in st.session_state.results:
+                                        if rr["id"] == art["id"]:
+                                            rr[field] = result.get("decision", "Maybe") if result else "Maybe"
+                                            rr["rationale"] = result.get("rationale", "") if result else f"AI error: {serr}"
+                                            rr["confidence"] = result.get("confidence", "") if result else ""
+                                            rr["decision"] = rr[field]
+                                            rr["stage"] = stage_num
+                                            break
+                            time.sleep(0.3)
+
+                    elif stage_num == 2:
+                        BATCH = 10
+                        for batch_start in range(0, len(queue), BATCH):
+                            batch = queue[batch_start: batch_start + BATCH]
+                            progress.progress(
+                                min((batch_start + BATCH) / len(queue), 1.0),
+                                text=f"Abstract-screening {batch_start+1}–{min(batch_start+BATCH, len(queue))} of {len(queue)}…",
+                            )
+                            batch_results, err = batch_screen_abstract(batch)
+                            if batch_results:
+                                for art, result in zip(batch, batch_results):
+                                    jq = check_journal_quality(art.get("journal", ""))
+                                    if jq["flag"] == "critical":
+                                        result["decision"] = "Exclude"
+                                        result["rationale"] = (result.get("rationale", "") + f" | Journal quality: {jq['reason']}").strip(" |")
+                                    for rr in st.session_state.results:
+                                        if rr["id"] == art["id"]:
+                                            rr["journal_quality"] = jq
+                                            rr[field] = result.get("decision", "Maybe")
+                                            rr["rationale"] = result.get("rationale", "")
+                                            rr["confidence"] = result.get("confidence", "")
+                                            rr["decision"] = result.get("decision", "Maybe")
+                                            rr["tier"] = result.get("tier", rr.get("tier", ""))
+                                            rr["kp"] = result.get("kp", rr.get("kp", "N/A"))
+                                            rr["stage"] = stage_num
+                                            break
+                            else:
+                                # Fall back to single-article calls for this batch
+                                for art in batch:
+                                    result, serr = screen_article(art)
+                                    jq = check_journal_quality(art.get("journal", ""))
+                                    if result and jq["flag"] == "critical":
+                                        result["decision"] = "Exclude"
+                                        result["rationale"] = (result.get("rationale", "") + f" | Journal quality: {jq['reason']}").strip(" |")
+                                    for rr in st.session_state.results:
+                                        if rr["id"] == art["id"]:
+                                            rr["journal_quality"] = jq
+                                            rr[field] = result.get("decision", "Maybe") if result else "Maybe"
+                                            rr["rationale"] = result.get("rationale", "") if result else f"AI error: {serr}"
+                                            rr["confidence"] = result.get("confidence", "") if result else ""
+                                            rr["decision"] = rr[field]
+                                            if result:
+                                                rr["tier"] = result.get("tier", rr.get("tier", ""))
+                                                rr["kp"] = result.get("kp", rr.get("kp", "N/A"))
+                                            rr["stage"] = stage_num
+                                            break
+                            time.sleep(0.3)
+
+                    else:
+                        # Stage 3: Critical appraisal — one at a time (complex per-study output)
+                        for i, art in enumerate(queue):
+                            progress.progress((i + 1) / len(queue), text=f"{i+1}/{len(queue)}: {art['title'][:50]}...")
                             result, err = appraise_study(art)
                             if result:
-                                # Store full appraisal
                                 st.session_state.appraisals[art["id"]] = result
                                 decision = result.get("recommendation", "Maybe")
                                 rationale = f"{result.get('overall_rating','')} quality — {result.get('rationale','')}"
                                 result = {"decision": decision, "rationale": rationale, "confidence": "high"}
-
-                        if result:
                             for rr in st.session_state.results:
                                 if rr["id"] == art["id"]:
-                                    rr[field] = result.get("decision", "Maybe")
-                                    rr["rationale"] = result.get("rationale", "")
-                                    rr["confidence"] = result.get("confidence", "")
-                                    rr["decision"] = result.get("decision", "Maybe")  # keep main decision in sync
-                                    if stage_num == 1:
-                                        # Tier/KP at title stage are tentative
-                                        rr["tier"] = result.get("tier", rr.get("tier", ""))
-                                    if stage_num == 2:
-                                        rr["tier"] = result.get("tier", rr.get("tier", ""))
-                                        rr["kp"] = result.get("kp", rr.get("kp", "N/A"))
+                                    rr[field] = result.get("decision", "Maybe") if result else "Maybe"
+                                    rr["rationale"] = result.get("rationale", "") if result else f"AI error: {err}"
+                                    rr["confidence"] = result.get("confidence", "") if result else ""
+                                    rr["decision"] = rr[field]
                                     rr["stage"] = stage_num
                                     break
-                        else:
-                            for rr in st.session_state.results:
-                                if rr["id"] == art["id"]:
-                                    rr[field] = "Maybe"
-                                    rr["rationale"] = f"AI error: {err}"
-                                    break
-                        time.sleep(0.4)
+                            time.sleep(0.3)
+
                     progress.empty()
                     st.success(f"Stage {stage_num} screening complete.")
                     st.rerun()
